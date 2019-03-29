@@ -98,12 +98,21 @@ class iteration(object):
             if pars.hps[hp].kind == 'discrete':
                 Xs[:, i] = Xs[:, i].astype(int)
 
-        for x0 in Xs:
-            res = minimize(self.min_obj, x0=x0, bounds=pars.bounds, method=pars.method)
-            # Find the best optimum across all initiations
-            if res.fun < min_val:
-                min_val = res.fun[0]
-                min_x = res.x
+        # Find the maximum in the acquisition function
+        if pars.optim_rout == 'minimize':
+            for x0 in Xs:
+                res = minimize(self.min_obj, x0=x0, bounds=pars.bounds, method=pars.method) 
+                # Find the best optimum across all initiations
+                if res.fun < min_val:
+                    min_val = res.fun[0]
+                    min_x = res.x   
+                    
+        elif pars.optim_rout == 'MCMC-MH':
+            for x0 in Xs:
+                res_x,res_f = self.MetroHastings(x0,[0.1]*self.N_hps,10000,tuple(pars.bounds))
+                if res_f < min_val:
+                    min_val = res_f
+                    min_x = res_x
 
         return min_x.reshape(-1, 1)
 
@@ -145,7 +154,89 @@ class iteration(object):
 
         return Ei
 
+    
+    def MetroHastings(self,x0,sig,Niter,bounds):
+    
+        "Function to perform metropolis Hastings sampling in an MCMC"
 
+        # --- Input ---
+        # x0: initial guess for random walk - list of continuous variables
+        # sig is the uncertainty in the MH sampling algorithm
+        # Niter is number of iterations to perform
+        # bounds: list of tuples of length x0, each one being the lower and upper bounds 
+
+        # --- Output ---
+        # Modal solution from the MCMC
+
+        # Calculate initial guess
+        acq = np.zeros(Niter)
+        acq[0] = self.min_obj(x0.reshape(1,-1))
+
+        # proposition point
+        xp = np.zeros((len(x0),Niter))
+        xp[:,0] = x0
+
+        for iiter in range(1,Niter):
+
+            # Propose new data point to try using MH
+            for i in range(len(x0)):
+
+                # iterate until we get a point in the correct interval
+                if x0[i]<bounds[i][0]:
+                    loc0 = bounds[i][0]
+                elif x0[i]>bounds[i][1]:
+                    loc0 = bounds[i][1]
+                else:
+                    loc0 = x0[i]
+
+                Pnext = np.random.normal(loc=loc0,scale=sig[i])
+                while (Pnext < bounds[i][0]) | (Pnext >= bounds[i][1]):
+                    Pnext = np.random.normal(loc=loc0,scale=sig[i])
+
+                # Then choose the first point that is    
+                xp[i,iiter] = Pnext
+
+            # Test value at this point
+            acq[iiter] = self.min_obj(xp[:,iiter].reshape(1,-1))
+
+            # Check if proposed point is better
+            if acq[iiter] > acq[iiter-1]:
+                x0 = xp[:,iiter].copy()
+
+            else:
+                p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
+                nextP = np.random.choice([0,1],p=p0)
+
+                if nextP == 1:
+                    x0 = xp[:,iiter].copy()
+                else:
+                    x0 = xp[:,iiter-1].copy()
+                    
+            
+        # Now get optimal solution by fitting a histogram to the data - ignore first 10% of samples
+        optim_x = np.zeros((1,len(x0)))   
+        for i in range(optim_x.shape[1]):
+            optim_x[0,i] = self.kernel_density_estimation(xp[i,int(0.1*Niter):],Niter)
+
+        return optim_x,self.min_obj(optim_x.reshape(1,-1))
+
+    def kernel_density_estimation(self,xpi,Niter):
+
+        " Function to find peak in a kernel density "
+
+        # We initially fudge this to get it working! 
+        # So we fit a histogram and then find the middle of the tallest bar
+
+        # Fit a histogram
+        data = xpi.copy()
+        data.sort()
+        hist, bin_edges = np.histogram(data, density=True,bins=max(10,30))
+
+        # Return the middle of the largest bin
+        n = np.argmax(hist)
+        return np.mean(bin_edges[n:n+2])
+    
+    
 class BayesianOptimisation(object):
 
     def __init__(self, **kwargs):
@@ -166,6 +257,12 @@ class BayesianOptimisation(object):
             self.NpI = kwargs['NpI']
         else:
             self.NpI = 2 ** N_hps
+            
+        # --- Optimisation routine for the acquisition function
+        if 'optim_rout' in kwargs.keys():
+            self.optim_rout = kwargs['optim_rout']
+        else:
+            self.optim_rout = 'minimize'
             
         # Get training data
         self.X_train = kwargs['X_train']
