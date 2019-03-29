@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 
 BayesianHyperparameter3.py
+Bayesian_hyperparameter_optimisation.ipynb
+.DS_Store
 
 # C extensions
 *.so
