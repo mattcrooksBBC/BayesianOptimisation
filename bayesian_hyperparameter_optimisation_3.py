@@ -18,9 +18,6 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-
-
-
 # -----------------------------------------
 # --- Class for a continuous hyperparameter
 # -----------------------------------------
@@ -38,8 +35,9 @@ class hyperparam(object):
             self.bounds = list_in
             self.kind = 'continuous'
         elif len(list_in) > 2:
-            self.bounds = [list_in[0], list_in[-1]]
+            self.bounds = [list_in[0],list_in[-1]]
             self.kind = 'discrete'
+            self.vals = list_in
 
 
 class iteration(object):
@@ -109,7 +107,14 @@ class iteration(object):
                     
         elif pars.optim_rout == 'MCMC-MH':
             for x0 in Xs:
-                res_x,res_f = self.MetroHastings(x0,[0.1]*self.N_hps,10000,tuple(pars.bounds))
+                res_x,res_f = self.MetroHastings(x0,[0.01]*self.N_hps,1000,tuple(pars.bounds))
+                if res_f < min_val:
+                    min_val = res_f
+                    min_x = res_x
+                    
+        elif pars.optim_rout == 'MCMC-discrete':
+            for x0 in Xs:
+                res_x,res_f = self.discrete_MCMC(x0,pars.x_dict,1000)
                 if res_f < min_val:
                     min_val = res_f
                     min_x = res_x
@@ -119,6 +124,10 @@ class iteration(object):
     def min_obj(self, X):
         # Minimization objective is the negative acquisition function
         return -self.expected_improvement(X.reshape(-1, self.N_hps))
+    
+    def max_obj(self, X):
+        # Minimization objective is the negative acquisition function
+        return self.expected_improvement(X.reshape(-1, self.N_hps))
 
     # Acquisition function - here we use expected improvement
     def expected_improvement(self, X):
@@ -171,13 +180,12 @@ class iteration(object):
         # Calculate initial guess
         acq = np.zeros(Niter)
         acq[0] = self.min_obj(x0.reshape(1,-1))
-
+        
         # proposition point
         xp = np.zeros((len(x0),Niter))
         xp[:,0] = x0
 
         for iiter in range(1,Niter):
-
             # Propose new data point to try using MH
             for i in range(len(x0)):
 
@@ -204,13 +212,17 @@ class iteration(object):
                 x0 = xp[:,iiter].copy()
 
             else:
-                p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
-                nextP = np.random.choice([0,1],p=p0)
-
-                if nextP == 1:
-                    x0 = xp[:,iiter].copy()
-                else:
+                if acq[iiter] == 0:
                     x0 = xp[:,iiter-1].copy()
+                else:
+                    p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
+
+                    nextP = np.random.choice([0,1],p=p0)
+
+                    if nextP == 1:
+                        x0 = xp[:,iiter].copy()
+                    else:
+                        x0 = xp[:,iiter-1].copy()
                     
             
         # Now get optimal solution by fitting a histogram to the data - ignore first 10% of samples
@@ -235,6 +247,70 @@ class iteration(object):
         # Return the middle of the largest bin
         n = np.argmax(hist)
         return np.mean(bin_edges[n:n+2])
+    
+    def discrete_MCMC(self,x0,x_dict,Niter):
+
+        "Function to perform fully discrete 'Metropolis Hastings' sampled MCMC"
+
+        # --- Input ---
+        # x0: starting guess
+        # Niter is number of iterations to perform
+        # bounds: dictionary of values for each variable with key equal to the position in the array 
+
+        # --- Output ---
+        # Modal solution from the MCMC
+
+        # Calculate initial guess
+        acq = np.zeros(Niter)
+        acq[0] = self.min_obj(x0.reshape(1,-1))
+        
+        
+        # proposition point
+        xp = np.zeros((len(x0),Niter))
+        xp[:,0] = x0
+
+        # count frequency of each value appearing
+        N_dict = {}
+        for k1 in x_dict.keys():
+            N_dict[k1] = np.zeros(len(x_dict[k1]))
+
+        for iiter in range(1,Niter):
+
+            # Choose a location to swap
+            i_choice = np.random.choice(range(len(x0)))
+
+            # Set xp to be x0
+            xp[:,iiter] = x0.copy()
+            # choose a new value for the i_choice-th entry
+            xp[i_choice,iiter] = np.random.choice(x_dict[i_choice])
+
+            # Test value at this point
+            acq[iiter] = self.min_obj(xp[:,iiter].reshape(1,-1))
+
+            # Check if proposed point is better
+            if acq[iiter] > acq[iiter-1]:
+                x0 = xp[:,iiter].copy()
+
+            else:
+
+                p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
+                nextP = np.random.choice([0,1],p=p0)
+                if nextP == 1:
+                    x0 = xp[:,iiter].copy()
+                else:
+                    x0 = xp[:,iiter-1].copy()
+
+            # accumulate the counts - when iiter excedes a 10th of Niter
+            if iiter > 0.1*Niter:
+                for aci in range(len(x0)):
+                    N_dict[aci][x_dict[aci].index(x0[aci])] += 1
+
+        # Now get optimal solution by fitting a histogram to the data - already ignored first 10% of samples
+        optim_x = np.zeros((1,len(x0)))   
+        for i in range(len(x0)):
+            optim_x[0,i] = x_dict[i][np.argmax(N_dict[i])]
+
+        return optim_x,self.min_obj(optim_x.reshape(1,-1))
     
     
 class BayesianOptimisation(object):
@@ -261,6 +337,11 @@ class BayesianOptimisation(object):
         # --- Optimisation routine for the acquisition function
         if 'optim_rout' in kwargs.keys():
             self.optim_rout = kwargs['optim_rout']
+            # Now define a new dictionary for use in discrete MCMC optimisation
+            if self.optim_rout == 'MCMC-discrete':
+                self.x_dict = {}
+                for i,hp in enumerate(self.hps.keys()):
+                    self.x_dict[i] = list(self.hps[hp].vals)
         else:
             self.optim_rout = 'minimize'
             
@@ -291,6 +372,14 @@ class BayesianOptimisation(object):
             self.bounds[i, :] = self.hps[hp].bounds
 
             self.Xt[:, i] = self.Xtdict[hp]
+
+        # Have we passed in our own score function or are we using the method attached to
+        # the MLmodel.score()
+        self.using_own_score = False
+        if 'scoring_function' in kwargs:
+            self.score = kwargs['scoring_function']
+            self.using_own_score = True
+
 
         # Calculate objective function at the sampled points
         self.Yt = self.objF(pars=self.Xtdict, n=self.NpI)
@@ -323,7 +412,7 @@ class BayesianOptimisation(object):
         if 'noise' in kwargs.keys():
             self.noise = kwargs['noise']
         else:
-            self.noise = noise = 0.2
+            self.noise = noise = 0.1
 
         self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=noise ** 2)
 
@@ -378,6 +467,11 @@ class BayesianOptimisation(object):
             model.fit(self.X_train, self.y_train)
 
             # Score
-            sc[i] = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
+            if self.using_own_score:
+                sc[i] = self.score(self.X_train, self.y_train)
+            else:
+                sc[i] = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
+
+            print(hps_iter, sc[i])
 
         return sc
