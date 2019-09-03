@@ -98,7 +98,7 @@ class iteration(object):
         # Obtain next sampling point from the acquisition function (expected_improvement)
         X_next = self.propose_location(pars)
         # Convert to int where necessary
-
+        
         # We need to recreate a dictionary with the keys given by the hyperparameter name before passing into our
         # MLmodel
         self.X_nextdict = {}
@@ -155,6 +155,7 @@ class iteration(object):
 
         # # Find the maximum in the acquisition function
 
+        print("next iteration")
         if pars.optim_rout == 'minimize':
             for x0 in Xs:
                 res = minimize(self.min_obj, x0=x0, bounds=pars.bounds, method=pars.method)
@@ -204,9 +205,9 @@ class iteration(object):
         # .   - xi ~ O(0) => exploitation
         # .   - xi ~ O(1) => exploration
         # Returns: Expected improvements at points X.
-        for i, hyper_param in enumerate(self.pars.hps.keys()):
+        for i, hyper_param in enumerate(sorted(self.pars.hps.keys())):
             if self.pars.hps[hyper_param].kind == 'discrete':
-                X[:, i] = np.round(X[:, i])
+                X[:, i] = np.round(X[:, i][0])
 
         # Evaluate the Gaussian Process at a test location X to get the mean and std
         mu, sigma = self.gpr.predict(X, return_std=True)
@@ -561,7 +562,7 @@ class BayesianOptimisation(object):
 
         # Print out best result
         max_val = max(self.Yt)
-        best_params_vals = self.Xt[np.where(self.Yt==max_val)[0][0]]
+        best_params_vals = self.Xt[np.where(self.Yt == max_val)[0][0]]
         logging.info('Best result {}: Params: {}'.format(max_val, best_params_vals))
         best_params = {}
         for key, val in zip(self.MLmodel.get_params(), best_params_vals):
@@ -605,7 +606,7 @@ class BayesianOptimisation(object):
             else:
                 sc[i] = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
 
-            print(hps_iter, sc[i])
+            print(hps_iter, f"score: {sc[i]}")
 
         return sc
 
