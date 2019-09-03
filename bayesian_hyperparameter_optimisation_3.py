@@ -388,11 +388,48 @@ class BayesianOptimisation(object):
     Main class for the optimisation
 
     --- Params ---
+    hps : dict
+        keys - names of hyperparameters. Note this should correspond to the name of the parameter in MLmodel
+        values - [upper_bound, lower_bound] for continuous, list (length > 2) for discrete
+    MLmodel : ml model instance
+        The model you want to optimise
+    optim_rout : str
+        name of optimisation routine you want to use. For now just use minimize until alternatives for dealing with
+        discrete and categorical values can be better implemented; this will be in a later release.
+    using_own_score : bool, DEFAULT : False
+        If false then use MLmodel.score() to measure performance of the model
+    scoring_function : func
+        Scoring function to use if using_own_model = False
+    NpI : int
+        Number of initial samples to train the Gaussian Process emulator on
+    Niter : int
+        Number of iterations to perform
+    n_restarts : int
+        Number of times we reinitiate the minimization routine to find the maximum of the acquisition function - avoids
+        local maxima
+    method : str, DEFAULT: 'L-BFGS-B'
+        Optimisation algorithm used by minimize
+    kernel : func, DEFAULT: RBF()
+        Kernel used in the Gaussian Process
+    noise : float
+        noise parameter used in the Gaussian Process - measures the uncertainty between the mean of the Gaussian process
+        and the data. Very low values means the mean passes through each data point and has zero uncertainty at these
+        points.
 
     --- Attributes ---
-
+    bounds : array ({number_of_hyperparameters} x 2)
+        The bounds for the hyperparameters
+    Xtdict : dict
+        dictionary of sampled points
+    Xt : array
+        array of all sampled points ({number_of_samples} x {number_of_hyperparameters})
+    Yt : array
+        accuracy of the ml model at each iteration
     --- Methods ---
-
+    objF :
+        returns the accuracy/score of the MLmodel at each iteration using MLmodel.score() or scoring_function()
+    hyperparameter_convergence_plots :
+        plots convergence plots for each hyperparameter
     """
 
     def __init__(self,

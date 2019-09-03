@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 
 untitled*
-.ideas/*
 BayesianHyperparameter3.py
 Bayesian_hyperparameter_optimisation.ipynb
 bayesian_hyperparameter_optimisation_3.pyc
@@ -13,6 +12,10 @@ Bayesian_hyperparameter_optimisation3.ipynb
 
 # C extensions
 *.so
+
+# pycharm nonsense
+.idea/workspace.xml
+.idea
 
 # Distribution / packaging
 .Python
