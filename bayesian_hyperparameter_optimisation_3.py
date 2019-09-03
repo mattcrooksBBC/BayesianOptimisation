@@ -12,6 +12,8 @@ from sklearn.gaussian_process.kernels import ConstantKernel, Matern, RBF
 from scipy.optimize import minimize
 from pyDOE import *
 from sklearn.model_selection import cross_val_score
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
 
 
 import logging
@@ -22,8 +24,22 @@ logger.setLevel(logging.INFO)
 # --- Class for a continuous hyperparameter
 # -----------------------------------------
 
-# --- Define a hyperparameter class that contains all the required specs of the hyperparameter
 class hyperparam(object):
+    """
+    Define a hyperparameter class that contains all the required specs of the hyperparameter
+    --- Param ---
+    list_in : list
+        The length of the list will define the hyperparameter kind.
+        len(list_in) == 2 : assume hyperparameter is continuous and the list defines the lower and upper bound
+        len(list_in) > 2 : assume the hyperparameter is discrete and can only take the specified values
+    --- Attributes ---
+    bounds : [lower_bound, upper_bound]
+        bounds for the values of the jhyperparameter
+    kind : str
+        continuous or discrete
+    vals [discrete only] : list
+        list of all possible values of the hyper parameter
+    """
 
     def __init__(self, list_in):
 
@@ -35,25 +51,56 @@ class hyperparam(object):
             self.bounds = list_in
             self.kind = 'continuous'
         elif len(list_in) > 2:
-            self.bounds = [list_in[0],list_in[-1]]
+            self.bounds = [list_in[0], list_in[-1]]
             self.kind = 'discrete'
             self.vals = list_in
 
 
 class iteration(object):
+    """
+    Class to carry out a single iteration of the optimisation by finding the maximum in the acquisition function
+
+    --- Params ---
+    pars : class
+        instance of the main Bayesian optimisation class to pass in information from previous iterations
+
+    --- Attributes ---
+    Xt : array ({number samples taken so far} x {number of hyperparameters})
+        array of sampled hyperparameter values so far
+    Yt : array ({number samples taken so far}, )
+        accuracy of model calculated from the statistical emulator
+    gpr :
+        Train Gaussian Process on sampled points
+    N_hps : int
+        number of hyperparameters
+    X_nextdict : dict
+        keys - name of hyperparameter
+        values - sampled points so far
+
+    --- Methods ---
+    propose_location :
+        Proposes the next sampling point by optimizing the acquisition function.
+    min_obj :
+        function we want to minimise; this is -expected_improvement so that when we take calculate the minimum we are
+        actually finding the maximum of the acquisition function
+    expected_improvement :
+        Calculates the expected improvement (acquisition function) for a given set of hyperparameter values
+
+    """
 
     def __init__(self, pars):
 
-        #         # --- Sample data
+        # --- Sample data
         self.Xt = pars.Xt
         self.Yt = pars.Yt
+        self.pars = pars
 
         # Obtain next sampling point from the acquisition function (expected_improvement)
         X_next = self.propose_location(pars)
         # Convert to int where necessary
 
-        # We need to recreate a dictionary with the keys given by the hyperparameter name before pasing into our
-        # ML model
+        # We need to recreate a dictionary with the keys given by the hyperparameter name before passing into our
+        # MLmodel
         self.X_nextdict = {}
         for i, hps1 in enumerate(sorted(pars.Xtdict.keys())):
             if pars.hps[hps1].kind == 'discrete':
@@ -71,14 +118,17 @@ class iteration(object):
 
     # Sampling function to find the next values for the hyperparameters
     def propose_location(self, pars):
-
-        # Proposes the next sampling point by optimizing the acquisition function. 
-        # Args: acquisition: Acquisition function. 
-        # X_sample: Sample locations (n x d). 
-        # Y_sample: Sample values (n x 1). 
-        # gpr: A GaussianProcessRegressor fitted to samples. 
+        """
+        Proposes the next sampling point by optimizing the acquisition function.
+        --- params ---
+        Args : acquisition: Acquisition function.
+        X_sample : Sample locations (n x d).
+        Y_sample : Sample values (n x 1).
+        gprc: A GaussianProcessRegressor fitted to samples.
         
-        # Returns: Location of the acquisition function maximum. 
+        --- Returns ---
+        Location of the acquisition function maximum.
+        """
         
         self.N_hps = pars.Xt.shape[1]
         min_val = 1
@@ -90,36 +140,48 @@ class iteration(object):
         # Find the best optimum by starting from n_restart different random points.
         Xs = lhs(self.N_hps, samples=pars.n_restarts, criterion='centermaximin')
         for i, hp in enumerate(sorted(pars.hps.keys())):
+
             Xs[:, i] = Xs[:, i] * (pars.hps[hp].bounds[1] - pars.hps[hp].bounds[0]) + pars.hps[hp].bounds[0]
 
             # Convert int values to integers
             if pars.hps[hp].kind == 'discrete':
                 Xs[:, i] = Xs[:, i].astype(int)
 
-        # Find the maximum in the acquisition function
+        # Find the best optimum by starting from n_restart different random points.
+        # Xs = lhs(self.pars.Ncontinuous_hps, samples=pars.n_restarts, criterion='centermaximin')
+        # for i, hp in enumerate(sorted(self.pars.continous_hps)):
+        #     Xs[:, i] = Xs[:, i] * (pars.hps[hp].bounds[1] - pars.hps[hp].bounds[0]) + \
+        #                    pars.hps[hp].bounds[0]
+
+        # # Find the maximum in the acquisition function
+
         if pars.optim_rout == 'minimize':
             for x0 in Xs:
-                res = minimize(self.min_obj, x0=x0, bounds=pars.bounds, method=pars.method) 
+                res = minimize(self.min_obj, x0=x0, bounds=pars.bounds, method=pars.method)
                 # Find the best optimum across all initiations
                 if res.fun < min_val:
                     min_val = res.fun[0]
-                    min_x = res.x   
+                    min_x = res.x
+
+
                     
-        elif pars.optim_rout == 'MCMC-MH':
-            for x0 in Xs:
-                res_x,res_f = self.MetroHastings(x0,[0.01]*self.N_hps,1000,tuple(pars.bounds))
-                if res_f < min_val:
-                    min_val = res_f
-                    min_x = res_x
-                    
-        elif pars.optim_rout == 'MCMC-discrete':
-            for x0 in Xs:
-                res_x,res_f = self.discrete_MCMC(x0,pars.x_dict,1000)
-                if res_f < min_val:
-                    min_val = res_f
-                    min_x = res_x
+        # elif pars.optim_rout == 'MCMC-MH':
+        #     for x0 in Xs:
+        #         res_x,res_f = self.MetroHastings(x0,[0.01]*self.N_hps,1000,tuple(pars.bounds))
+        #         if res_f < min_val:
+        #             min_val = res_f
+        #             min_x = res_x
+        #
+        # elif pars.optim_rout == 'MCMC-discrete':
+        #     for x0 in Xs:
+        #         res_x, res_f = self.discrete_MCMC(x0, pars.x_dict, 1000)
+        #         if res_f < min_val:
+        #             min_val = res_f
+        #             min_x = res_x
 
         return min_x.reshape(-1, 1)
+
+    # def add_discrete_variables(self, x0, ):
 
     def min_obj(self, X):
         # Minimization objective is the negative acquisition function
@@ -142,6 +204,9 @@ class iteration(object):
         # .   - xi ~ O(0) => exploitation
         # .   - xi ~ O(1) => exploration
         # Returns: Expected improvements at points X.
+        for i, hyper_param in enumerate(self.pars.hps.keys()):
+            if self.pars.hps[hyper_param].kind == 'discrete':
+                X[:, i] = np.round(X[:, i])
 
         # Evaluate the Gaussian Process at a test location X to get the mean and std
         mu, sigma = self.gpr.predict(X, return_std=True)
@@ -248,21 +313,26 @@ class iteration(object):
         n = np.argmax(hist)
         return np.mean(bin_edges[n:n+2])
     
-    def discrete_MCMC(self,x0,x_dict,Niter):
+    def discrete_MCMC(self, x0, x_dict, Niter):
 
-        "Function to perform fully discrete 'Metropolis Hastings' sampled MCMC"
+        """
+        Function to perform fully discrete 'Metropolis Hastings' sampled MCMC
 
-        # --- Input ---
-        # x0: starting guess
-        # Niter is number of iterations to perform
-        # bounds: dictionary of values for each variable with key equal to the position in the array 
+        --- Params ---
+        x0 : float
+            starting guess
+        Niter : int
+            number of iterations to perform
+        bounds : dict
+            dictionary of values for each variable with key equal to the position in the array
 
-        # --- Output ---
-        # Modal solution from the MCMC
+        --- Returns ---
+        Modal solution from the MCMC
+        """
 
         # Calculate initial guess
         acq = np.zeros(Niter)
-        acq[0] = self.min_obj(x0.reshape(1,-1))
+        acq[0] = self.min_obj(x0.reshape(1, -1))
         
         
         # proposition point
@@ -314,36 +384,60 @@ class iteration(object):
     
     
 class BayesianOptimisation(object):
+    """
+    Main class for the optimisation
 
-    def __init__(self, **kwargs):
+    --- Params ---
+
+    --- Attributes ---
+
+    --- Methods ---
+
+    """
+
+    def __init__(self,
+                 hps,
+                 MLmodel,
+                 NpI = None,
+                 optim_rout = 'minimize',
+                 using_own_score = False,
+                 **kwargs):
+
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
         # Get hyperparameter info and convert to hyperparameter class
         self.hps = {}
-        for hp in kwargs['hps'].keys():
-            self.hps[hp] = hyperparam(kwargs['hps'][hp])
+        self.Ncontinous_hps = 0
+        for hp in hps:
+            self.hps[hp] = hyperparam(hps[hp])
+            # Count number of continuous hyperparameters
+            if self.hps[hp].kind == 'continuous':
+                self.Ncontinous_hps += 1
+        self.continous_hps = [hp for hp in self.hps if self.hps[hp].kind == 'continuous']
 
         # Objective function to minimise
-        self.MLmodel = kwargs['MLmodel']
+        self.MLmodel = MLmodel
 
         # Number of hyperparameters
-        N_hps = len(self.hps.keys())
+        self.N_hps = len(self.hps.keys())
 
         # --- Initial sample data
-        if 'NpI' in kwargs.keys():
-            self.NpI = kwargs['NpI']
+        if NpI is None:
+            self.NpI = 2 ** self.N_hps
         else:
-            self.NpI = 2 ** N_hps
+            self.NpI = NpI
+
             
         # --- Optimisation routine for the acquisition function
-        if 'optim_rout' in kwargs.keys():
-            self.optim_rout = kwargs['optim_rout']
-            # Now define a new dictionary for use in discrete MCMC optimisation
-            if self.optim_rout == 'MCMC-discrete':
-                self.x_dict = {}
-                for i,hp in enumerate(self.hps.keys()):
-                    self.x_dict[i] = list(self.hps[hp].vals)
-        else:
-            self.optim_rout = 'minimize'
+        self.optim_rout = optim_rout
+        # Now define a new dictionary for use in discrete MCMC optimisation
+        if self.optim_rout == 'MCMC-discrete':
+            self.x_dict = {}
+            for i, hp in enumerate(self.hps.keys()):
+                self.x_dict[i] = list(self.hps[hp].vals)
+                print(self.x_dict[i])
+
             
         # Get training data
         self.X_train = kwargs['X_train']
@@ -375,10 +469,9 @@ class BayesianOptimisation(object):
 
         # Have we passed in our own score function or are we using the method attached to
         # the MLmodel.score()
-        self.using_own_score = False
-        if 'scoring_function' in kwargs:
+        self.using_own_score = using_own_score
+        if self.using_own_score:
             self.score = kwargs['scoring_function']
-            self.using_own_score = True
 
 
         # Calculate objective function at the sampled points
@@ -388,14 +481,14 @@ class BayesianOptimisation(object):
         if 'Niter' in kwargs.keys():
             self.Niter = kwargs['Niter']
         else:
-            self.Niter = 10 * N_hps
+            self.Niter = 10 * self.N_hps
         logging.info('Will perform {} iterations'.format(self.Niter))
 
         # --- Number of optimisations of the acquisition function
         if 'n_restarts' in kwargs.keys():
             self.n_restarts = kwargs['n_restarts']
         else:
-            self.n_restarts = 25 * N_hps
+            self.n_restarts = 25 * self.N_hps
 
         # --- Optimisation method used
         if 'method' in kwargs.keys():
@@ -412,9 +505,12 @@ class BayesianOptimisation(object):
         if 'noise' in kwargs.keys():
             self.noise = kwargs['noise']
         else:
-            self.noise = noise = 0.1
+            self.noise = 0.1
 
-        self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=noise ** 2)
+        self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=self.noise * 2)
+
+
+
 
     def optimise(self):
         for i in range(self.Niter):
@@ -475,3 +571,37 @@ class BayesianOptimisation(object):
             print(hps_iter, sc[i])
 
         return sc
+
+    def hyperparameter_convergence_plots(self):
+        """
+        Plot convergence plots for each hyperparameter
+        """
+
+        rcParams['font.size'] = 16
+        rcParams['font.family'] = 'serif'
+        rcParams['legend.frameon'] = False
+        rcParams['text.color'] = 'grey'
+        rcParams['xtick.color'] = 'grey'
+        rcParams['ytick.color'] = 'grey'
+        rcParams['xtick.major.width'] = 2
+        rcParams['ytick.major.width'] = 2
+        rcParams['axes.labelcolor'] = 'grey'
+
+        Ncols = 2
+        Nrows = np.floor(self.N_hps / Ncols) + 1
+
+        fig, ax = plt.subplots(figsize=(16, 5 * Nrows))
+        plt.subplots_adjust(wspace=0.2, hspace=0.4)
+        for hpi, hp in enumerate(sorted(self.hps)):
+            plt.subplot(Nrows, Ncols, hpi + 1)
+            plt.plot(self.Xt[:, hpi], '.', markersize=15, color='silver')
+            plt.xlim()
+            plt.xlabel('Iteration')
+            plt.title(hp, y=1.03)
+            ax.grid(which='major', axis='x')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+
+        plt.show()
