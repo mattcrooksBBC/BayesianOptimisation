@@ -1,6 +1,12 @@
 # BayesianOptimisation
 Code for a Bayesian hyper parameter optimisation algorithm for tuning of ML models
 
-# Overview
+# Overview
 The method starts with a few randomly selected hyperparameter values to get started and trains the ML model on these values. 
-It then trains a Gaussian process over these points
+It then trains a Gaussian process over these points in order to predict the accuracy/score metric. The Bayesian optimisation part begins at this point. Using expected improvement as the acquisition function, the algorithm selects new values of the hyperparameters to try based on the probability of the accuracy being higher at those points than the current maximum. This calculation is based off the Gaussian process and takes into account both the mean and uncertainty that the Gaussian process predicts at each point. After each new set of hyperparameters is chosen, the ML model is retrained on these values and the Gaussian process retrained on all sampled points so far including the new values. The process then repeats. 
+
+# Hyperparameter definition
+These are specified as a dictionary. The key of the dictionary should correspond to the name of the hyperparameter that is passed into the MLmodel such as "n_estimators" or "min_weight_fraction_leaf" in the case of an sklearn random forest. The values determine either the range, in the case of continuous hyperparameters, or a list of all values to be tested, in the case of a discrete hyperparameter. Providing a list of length 2 will be automatically interpreted as a continuous hyperparameter and should be of the form [lower_bound, upper_bound]. Discrete hyperparameter values can be provided in any order but much contain at least 3 elements otherwise it will be interpreted as continuous. For discrete hyperparameters with just 2 values, you should simply run the optimisation over the other hyperparameters twice with the 2-valued hyperparameter value hardcoded in each case.
+
+# Continuous vs discrete hyperparameters
+The algorithm can now deal with both continuous and discrete valued hyperparameters. This is applicable to the optimization method used to find the maximum in the acquisition function. The default is the constrained optimiser scipy.optimize.minimize (we add a minus sign to the acquisition function so that it solves for th maximum) but this can only cope with continuous variables. If any of the hyperparameters are discrete the you should set optim_rout = 'random_search'. This applies random search to the discrete hyperparameters and for each random choice then applies scipy.optimize.minimize to the remaining continuous hyperparameters. NOTE: by random search we are referring to the method of optimising the acquisition function, the overall algorithm for finding the optimal hyperparameters is still Bayesian!
