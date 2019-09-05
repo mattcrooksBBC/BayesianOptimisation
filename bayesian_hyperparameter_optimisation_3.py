@@ -98,7 +98,7 @@ class iteration(object):
         # Obtain next sampling point from the acquisition function (expected_improvement)
         X_next = self.propose_location(pars)
         # Convert to int where necessary
-        
+
         # We need to recreate a dictionary with the keys given by the hyperparameter name before passing into our
         # MLmodel
         self.X_nextdict = {}
@@ -137,15 +137,29 @@ class iteration(object):
         self.gpr = pars.gpr
         self.Xt = pars.Xt
 
+        # # Find the best optimum by starting from n_restart different random points.
+        # Xs = lhs(self.N_hps, samples=pars.n_restarts, criterion='centermaximin')
+        # for i, hp in enumerate(sorted(pars.hps.keys())):
+        #
+        #     Xs[:, i] = Xs[:, i] * (pars.hps[hp].bounds[1] - pars.hps[hp].bounds[0]) + pars.hps[hp].bounds[0]
+        #
+        #     # Convert int values to integers
+        #     if pars.hps[hp].kind == 'discrete':
+        #         Xs[:, i] = Xs[:, i].astype(int)
+
         # Find the best optimum by starting from n_restart different random points.
-        Xs = lhs(self.N_hps, samples=pars.n_restarts, criterion='centermaximin')
-        for i, hp in enumerate(sorted(pars.hps.keys())):
+        if self.pars.Ncontinous_hps > 0:
 
-            Xs[:, i] = Xs[:, i] * (pars.hps[hp].bounds[1] - pars.hps[hp].bounds[0]) + pars.hps[hp].bounds[0]
+            if pars.sampling_method == 'maximin':
+                Xs = lhs(self.pars.Ncontinous_hps, samples=pars.n_restarts, criterion='centermaximin')
+            elif pars.sampling_method == 'random':
+                Xs = np.random.uniform(size=(pars.n_restarts, self.pars.Ncontinous_hps))
 
-            # Convert int values to integers
-            if pars.hps[hp].kind == 'discrete':
-                Xs[:, i] = Xs[:, i].astype(int)
+            conts_counter = 0
+            for i, hp in enumerate(sorted(pars.hps.keys())):
+                if pars.hps[hp].kind == 'continuous':
+                    Xs[:, conts_counter] = Xs[:, conts_counter] * (pars.hps[hp].bounds[1] - pars.hps[hp].bounds[0]) + pars.hps[hp].bounds[0]
+                    conts_counter += 1
 
         # Find the best optimum by starting from n_restart different random points.
         # Xs = lhs(self.pars.Ncontinuous_hps, samples=pars.n_restarts, criterion='centermaximin')
@@ -155,7 +169,10 @@ class iteration(object):
 
         # # Find the maximum in the acquisition function
 
-        print("next iteration")
+        # print(f"optim rout: {pars.optim_rout}")
+        # print(f"Ncontinous_hps: {pars.Ncontinous_hps}")
+
+
         if pars.optim_rout == 'minimize':
             for x0 in Xs:
                 res = minimize(self.min_obj, x0=x0, bounds=pars.bounds, method=pars.method)
@@ -164,36 +181,67 @@ class iteration(object):
                     min_val = res.fun[0]
                     min_x = res.x
 
-
-                    
-        # elif pars.optim_rout == 'MCMC-MH':
-        #     for x0 in Xs:
-        #         res_x,res_f = self.MetroHastings(x0,[0.01]*self.N_hps,1000,tuple(pars.bounds))
-        #         if res_f < min_val:
-        #             min_val = res_f
-        #             min_x = res_x
-        #
-        # elif pars.optim_rout == 'MCMC-discrete':
-        #     for x0 in Xs:
-        #         res_x, res_f = self.discrete_MCMC(x0, pars.x_dict, 1000)
-        #         if res_f < min_val:
-        #             min_val = res_f
-        #             min_x = res_x
+        elif pars.optim_rout == 'random_search':
+            if self.pars.Ncontinous_hps > 0:
+                for x0 in Xs:
+                    Ndiscrete_hps = self.N_hps - self.pars.Ncontinous_hps
+                    self.discrete_values = []
+                    for i, hp in enumerate(sorted(self.pars.hps)):
+                        if self.pars.hps[hp].kind == 'discrete':
+                            self.discrete_values.append(np.random.choice(self.pars.hps[hp].vals))
+                    # print(f"discrete: {self.discrete_values}")
+                    res = minimize(self.min_obj, x0=x0, bounds=pars.conts_bounds, method=pars.method)
+                    # print(f"res: {res.x}, {res.fun}")
+                    # Find the best optimum across all initiations
+                    if res.fun < min_val:
+                        min_val = res.fun[0]
+                        min_x = self.parse_obj_inputs(res.x)
+            else:
+                val = self.min_obj()
+                if val < min_val:
+                    min_val = val
+                    min_x = np.array(self.discrete_values)
+        print(f"final res: t{min_x}, {min_val}")
 
         return min_x.reshape(-1, 1)
 
-    # def add_discrete_variables(self, x0, ):
+    def parse_obj_inputs(self, continuous_values):
 
-    def min_obj(self, X):
+        if self.discrete_values is None:
+            return continuous_values
+        else:
+            continuous_values = np.array([continuous_values]).ravel()
+
+            self.values = []
+            disc_counter = 0
+            conts_counter = 0
+            for i, hp in enumerate(sorted(self.pars.hps)):
+                if self.pars.hps[hp].kind == 'discrete':
+                    self.values += [self.discrete_values[disc_counter]]
+                    disc_counter += 1
+                elif self.pars.hps[hp].kind == 'continuous':
+                    self.values += [continuous_values[conts_counter]]
+                    conts_counter += 1
+
+            return np.array(self.values).reshape(1, -1)
+
+    def min_obj(self, X = None):
         # Minimization objective is the negative acquisition function
-        return -self.expected_improvement(X.reshape(-1, self.N_hps))
+        if X is None:
+            return -self.expected_improvement()
+        else:
+            return -self.expected_improvement(X.reshape(-1, self.pars.Ndim_optim))
     
-    def max_obj(self, X):
+    def max_obj(self, X = None):
         # Minimization objective is the negative acquisition function
-        return self.expected_improvement(X.reshape(-1, self.N_hps))
+        if X is None:
+            return self.expected_improvement()
+        else:
+            return self.expected_improvement(X.reshape(-1, self.pars.Ndim_optim))
+
 
     # Acquisition function - here we use expected improvement
-    def expected_improvement(self, X):
+    def expected_improvement(self, X=None):
 
         # --- Computes the EI at points X based on existing samples X_sample and Y_sample using a Gaussian process 
         # surrogate model. 
@@ -205,9 +253,12 @@ class iteration(object):
         # .   - xi ~ O(0) => exploitation
         # .   - xi ~ O(1) => exploration
         # Returns: Expected improvements at points X.
-        for i, hyper_param in enumerate(sorted(self.pars.hps.keys())):
-            if self.pars.hps[hyper_param].kind == 'discrete':
-                X[:, i] = np.round(X[:, i][0])
+        X = self.parse_obj_inputs(X)
+        xi = self.pars.xi
+
+        # for i, hyper_param in enumerate(sorted(self.pars.hps.keys())):
+        #     if self.pars.hps[hyper_param].kind == 'discrete':
+        #         X[:, i] = np.round(X[:, i][0])
 
         # Evaluate the Gaussian Process at a test location X to get the mean and std
         mu, sigma = self.gpr.predict(X, return_std=True)
@@ -221,168 +272,175 @@ class iteration(object):
         # See also section 2.4 in [...]
         mu_sample_opt = np.max(mu_sample)
 
-        imp = mu - mu_sample_opt
+        imp = mu - mu_sample_opt - xi
         Z = imp / sigma
 
-        Ei = (mu - mu_sample_opt) * norm.cdf(mu, loc=mu_sample_opt, scale=sigma) \
-             + mu_sample_opt * norm.pdf(mu, loc=mu_sample_opt, scale=sigma)
+        # Ei = (mu - mu_sample_opt - xi) * norm.cdf(mu, loc=mu_sample_opt, scale=sigma) \
+        #      + mu_sample_opt * norm.pdf(mu, loc=mu_sample_opt, scale=sigma)
+        Ei = (mu - mu_sample_opt - xi) * norm.cdf(Z) \
+             + sigma * norm.pdf(Z)
+
+        Ei *= (sigma > 0)
 
         return Ei
 
     
-    def MetroHastings(self,x0,sig,Niter,bounds):
-    
-        "Function to perform metropolis Hastings sampling in an MCMC"
+    # def MetroHastings(self,x0,sig,Niter,bounds):
+    #
+    #     "Function to perform metropolis Hastings sampling in an MCMC"
+    #
+    #     # --- Input ---
+    #     # x0: initial guess for random walk - list of continuous variables
+    #     # sig is the uncertainty in the MH sampling algorithm
+    #     # Niter is number of iterations to perform
+    #     # bounds: list of tuples of length x0, each one being the lower and upper bounds
+    #
+    #     # --- Output ---
+    #     # Modal solution from the MCMC
+    #
+    #     # Calculate initial guess
+    #     acq = np.zeros(Niter)
+    #     acq[0] = self.min_obj(x0.reshape(1,-1))
+    #
+    #     # proposition point
+    #     xp = np.zeros((len(x0),Niter))
+    #     xp[:,0] = x0
+    #
+    #     for iiter in range(1,Niter):
+    #         # Propose new data point to try using MH
+    #         for i in range(len(x0)):
+    #
+    #             # iterate until we get a point in the correct interval
+    #             if x0[i]<bounds[i][0]:
+    #                 loc0 = bounds[i][0]
+    #             elif x0[i]>bounds[i][1]:
+    #                 loc0 = bounds[i][1]
+    #             else:
+    #                 loc0 = x0[i]
+    #
+    #             Pnext = np.random.normal(loc=loc0,scale=sig[i])
+    #             while (Pnext < bounds[i][0]) | (Pnext >= bounds[i][1]):
+    #                 Pnext = np.random.normal(loc=loc0,scale=sig[i])
+    #
+    #             # Then choose the first point that is
+    #             xp[i,iiter] = Pnext
+    #
+    #         # Test value at this point
+    #         acq[iiter] = self.min_obj(xp[:,iiter].reshape(1,-1))
+    #
+    #         # Check if proposed point is better
+    #         if acq[iiter] > acq[iiter-1]:
+    #             x0 = xp[:,iiter].copy()
+    #
+    #         else:
+    #             if acq[iiter] == 0:
+    #                 x0 = xp[:,iiter-1].copy()
+    #             else:
+    #                 p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
+    #
+    #                 nextP = np.random.choice([0,1],p=p0)
+    #
+    #                 if nextP == 1:
+    #                     x0 = xp[:,iiter].copy()
+    #                 else:
+    #                     x0 = xp[:,iiter-1].copy()
+    #
+    #
+    #     # Now get optimal solution by fitting a histogram to the data - ignore first 10% of samples
+    #     optim_x = np.zeros((1,len(x0)))
+    #     for i in range(optim_x.shape[1]):
+    #         optim_x[0,i] = self.kernel_density_estimation(xp[i,int(0.1*Niter):],Niter)
+    #
+    #     return optim_x,self.min_obj(optim_x.reshape(1,-1))
+    #
+    # def kernel_density_estimation(self,xpi,Niter):
+    #
+    #     " Function to find peak in a kernel density "
+    #
+    #     # We initially fudge this to get it working!
+    #     # So we fit a histogram and then find the middle of the tallest bar
+    #
+    #     # Fit a histogram
+    #     data = xpi.copy()
+    #     data.sort()
+    #     hist, bin_edges = np.histogram(data, density=True,bins=max(10,30))
+    #
+    #     # Return the middle of the largest bin
+    #     n = np.argmax(hist)
+    #     return np.mean(bin_edges[n:n+2])
+    #
+    # def discrete_MCMC(self, x0, x_dict, Niter):
+    #
+    #     """
+    #     Function to perform fully discrete 'Metropolis Hastings' sampled MCMC
+    #
+    #     --- Params ---
+    #     x0 : float
+    #         starting guess
+    #     Niter : int
+    #         number of iterations to perform
+    #     bounds : dict
+    #         dictionary of values for each variable with key equal to the position in the array
+    #
+    #     --- Returns ---
+    #     Modal solution from the MCMC
+    #     """
+    #
+    #     # Calculate initial guess
+    #     acq = np.zeros(Niter)
+    #     acq[0] = self.min_obj(x0.reshape(1, -1))
+    #
+    #
+    #     # proposition point
+    #     xp = np.zeros((len(x0),Niter))
+    #     xp[:,0] = x0
+    #
+    #     # count frequency of each value appearing
+    #     N_dict = {}
+    #     for k1 in x_dict.keys():
+    #         N_dict[k1] = np.zeros(len(x_dict[k1]))
+    #
+    #     for iiter in range(1,Niter):
+    #
+    #         # Choose a location to swap
+    #         i_choice = np.random.choice(range(len(x0)))
+    #
+    #         # Set xp to be x0
+    #         xp[:,iiter] = x0.copy()
+    #         # choose a new value for the i_choice-th entry
+    #         xp[i_choice,iiter] = np.random.choice(x_dict[i_choice])
+    #
+    #         # Test value at this point
+    #         acq[iiter] = self.min_obj(xp[:,iiter].reshape(1,-1))
+    #
+    #         # Check if proposed point is better
+    #         if acq[iiter] > acq[iiter-1]:
+    #             x0 = xp[:,iiter].copy()
+    #
+    #         else:
+    #
+    #             p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
+    #             nextP = np.random.choice([0,1],p=p0)
+    #             if nextP == 1:
+    #                 x0 = xp[:,iiter].copy()
+    #             else:
+    #                 x0 = xp[:,iiter-1].copy()
+    #
+    #         # accumulate the counts - when iiter excedes a 10th of Niter
+    #         if iiter > 0.1*Niter:
+    #             for aci in range(len(x0)):
+    #                 N_dict[aci][x_dict[aci].index(x0[aci])] += 1
+    #
+    #     # Now get optimal solution by fitting a histogram to the data - already ignored first 10% of samples
+    #     optim_x = np.zeros((1,len(x0)))
+    #     for i in range(len(x0)):
+    #         optim_x[0,i] = x_dict[i][np.argmax(N_dict[i])]
+    #
+    #     return optim_x,self.min_obj(optim_x.reshape(1,-1))
 
-        # --- Input ---
-        # x0: initial guess for random walk - list of continuous variables
-        # sig is the uncertainty in the MH sampling algorithm
-        # Niter is number of iterations to perform
-        # bounds: list of tuples of length x0, each one being the lower and upper bounds 
 
-        # --- Output ---
-        # Modal solution from the MCMC
 
-        # Calculate initial guess
-        acq = np.zeros(Niter)
-        acq[0] = self.min_obj(x0.reshape(1,-1))
-        
-        # proposition point
-        xp = np.zeros((len(x0),Niter))
-        xp[:,0] = x0
 
-        for iiter in range(1,Niter):
-            # Propose new data point to try using MH
-            for i in range(len(x0)):
-
-                # iterate until we get a point in the correct interval
-                if x0[i]<bounds[i][0]:
-                    loc0 = bounds[i][0]
-                elif x0[i]>bounds[i][1]:
-                    loc0 = bounds[i][1]
-                else:
-                    loc0 = x0[i]
-
-                Pnext = np.random.normal(loc=loc0,scale=sig[i])
-                while (Pnext < bounds[i][0]) | (Pnext >= bounds[i][1]):
-                    Pnext = np.random.normal(loc=loc0,scale=sig[i])
-
-                # Then choose the first point that is    
-                xp[i,iiter] = Pnext
-
-            # Test value at this point
-            acq[iiter] = self.min_obj(xp[:,iiter].reshape(1,-1))
-
-            # Check if proposed point is better
-            if acq[iiter] > acq[iiter-1]:
-                x0 = xp[:,iiter].copy()
-
-            else:
-                if acq[iiter] == 0:
-                    x0 = xp[:,iiter-1].copy()
-                else:
-                    p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
-
-                    nextP = np.random.choice([0,1],p=p0)
-
-                    if nextP == 1:
-                        x0 = xp[:,iiter].copy()
-                    else:
-                        x0 = xp[:,iiter-1].copy()
-                    
-            
-        # Now get optimal solution by fitting a histogram to the data - ignore first 10% of samples
-        optim_x = np.zeros((1,len(x0)))   
-        for i in range(optim_x.shape[1]):
-            optim_x[0,i] = self.kernel_density_estimation(xp[i,int(0.1*Niter):],Niter)
-
-        return optim_x,self.min_obj(optim_x.reshape(1,-1))
-
-    def kernel_density_estimation(self,xpi,Niter):
-
-        " Function to find peak in a kernel density "
-
-        # We initially fudge this to get it working! 
-        # So we fit a histogram and then find the middle of the tallest bar
-
-        # Fit a histogram
-        data = xpi.copy()
-        data.sort()
-        hist, bin_edges = np.histogram(data, density=True,bins=max(10,30))
-
-        # Return the middle of the largest bin
-        n = np.argmax(hist)
-        return np.mean(bin_edges[n:n+2])
-    
-    def discrete_MCMC(self, x0, x_dict, Niter):
-
-        """
-        Function to perform fully discrete 'Metropolis Hastings' sampled MCMC
-
-        --- Params ---
-        x0 : float
-            starting guess
-        Niter : int
-            number of iterations to perform
-        bounds : dict
-            dictionary of values for each variable with key equal to the position in the array
-
-        --- Returns ---
-        Modal solution from the MCMC
-        """
-
-        # Calculate initial guess
-        acq = np.zeros(Niter)
-        acq[0] = self.min_obj(x0.reshape(1, -1))
-        
-        
-        # proposition point
-        xp = np.zeros((len(x0),Niter))
-        xp[:,0] = x0
-
-        # count frequency of each value appearing
-        N_dict = {}
-        for k1 in x_dict.keys():
-            N_dict[k1] = np.zeros(len(x_dict[k1]))
-
-        for iiter in range(1,Niter):
-
-            # Choose a location to swap
-            i_choice = np.random.choice(range(len(x0)))
-
-            # Set xp to be x0
-            xp[:,iiter] = x0.copy()
-            # choose a new value for the i_choice-th entry
-            xp[i_choice,iiter] = np.random.choice(x_dict[i_choice])
-
-            # Test value at this point
-            acq[iiter] = self.min_obj(xp[:,iiter].reshape(1,-1))
-
-            # Check if proposed point is better
-            if acq[iiter] > acq[iiter-1]:
-                x0 = xp[:,iiter].copy()
-
-            else:
-
-                p0 = [acq[iiter-1]/(acq[iiter]+acq[iiter-1]),acq[iiter]/(acq[iiter]+acq[iiter-1])]
-                nextP = np.random.choice([0,1],p=p0)
-                if nextP == 1:
-                    x0 = xp[:,iiter].copy()
-                else:
-                    x0 = xp[:,iiter-1].copy()
-
-            # accumulate the counts - when iiter excedes a 10th of Niter
-            if iiter > 0.1*Niter:
-                for aci in range(len(x0)):
-                    N_dict[aci][x_dict[aci].index(x0[aci])] += 1
-
-        # Now get optimal solution by fitting a histogram to the data - already ignored first 10% of samples
-        optim_x = np.zeros((1,len(x0)))   
-        for i in range(len(x0)):
-            optim_x[0,i] = x_dict[i][np.argmax(N_dict[i])]
-
-        return optim_x,self.min_obj(optim_x.reshape(1,-1))
-    
     
 class BayesianOptimisation(object):
     """
@@ -426,6 +484,7 @@ class BayesianOptimisation(object):
         array of all sampled points ({number_of_samples} x {number_of_hyperparameters})
     Yt : array
         accuracy of the ml model at each iteration
+
     --- Methods ---
     objF :
         returns the accuracy/score of the MLmodel at each iteration using MLmodel.score() or scoring_function()
@@ -439,16 +498,22 @@ class BayesianOptimisation(object):
                  NpI = None,
                  optim_rout = 'minimize',
                  using_own_score = False,
+                 sampling_method = 'random',
+                 xi = 0.01,
                  **kwargs):
 
         for key, value in kwargs.items():
             setattr(self, key, value)
+
+        self.sampling_method = sampling_method
+        self.xi = xi
 
         # Get hyperparameter info and convert to hyperparameter class
         self.hps = {}
         self.Ncontinous_hps = 0
         for hp in hps:
             self.hps[hp] = hyperparam(hps[hp])
+
             # Count number of continuous hyperparameters
             if self.hps[hp].kind == 'continuous':
                 self.Ncontinous_hps += 1
@@ -469,12 +534,14 @@ class BayesianOptimisation(object):
             
         # --- Optimisation routine for the acquisition function
         self.optim_rout = optim_rout
+        self.Ndim_optim = self.Ncontinous_hps
         # Now define a new dictionary for use in discrete MCMC optimisation
         if self.optim_rout == 'MCMC-discrete':
             self.x_dict = {}
             for i, hp in enumerate(self.hps.keys()):
                 self.x_dict[i] = list(self.hps[hp].vals)
-                print(self.x_dict[i])
+        elif self.optim_rout == 'random_search':
+            self.Ndim_optim = self.Ncontinous_hps
 
             
         # Get training data
@@ -488,22 +555,34 @@ class BayesianOptimisation(object):
         self.Xt = np.zeros((self.NpI, len(self.hps.keys())))
         # We also need to collect together all of the bounds for the optimization routing into one array
         self.bounds = np.zeros((len(self.hps.keys()), 2))
+        self.conts_bounds = np.zeros((self.Ncontinous_hps, 2))
 
         # Get some initial samples on the unit interval
-        Xt = lhs(len(self.hps.keys()), samples=self.NpI, criterion='centermaximin')
+        # if self.sampling_method == 'maximin':
+        #     self.Xt = lhs(len(self.hps.keys()), samples=self.NpI, criterion='centermaximin')
+        # else:
+        self.Xt = self.generate_random_samples()
+
 
         # For each hyper parameter, rescale the unit inverval on the 
         # appropriate range for that hp and store in a dict
+        conts_counter = 0
         for i, hp in enumerate(sorted(self.hps.keys())):
-            self.Xtdict[hp] = self.hps[hp].bounds[0] + Xt[:, i] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0])
+            # self.Xtdict[hp] = self.hps[hp].bounds[0] + Xt[:, i] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0])
+            self.Xtdict[hp] = self.Xt[:, i]
             # convert these to an int if kind = 'discrete'
             
             if self.hps[hp].kind == 'discrete':
-                self.Xtdict[hp] = self.Xtdict[hp].astype(int)
+                # self.Xtdict[hp] = self.Xtdict[hp].astype(int)
+                None
+            else:
+                self.conts_bounds[conts_counter, :] = self.hps[hp].bounds
+                conts_counter += 1
 
             self.bounds[i, :] = self.hps[hp].bounds
 
             self.Xt[:, i] = self.Xtdict[hp]
+
 
         # Have we passed in our own score function or are we using the method attached to
         # the MLmodel.score()
@@ -543,14 +622,14 @@ class BayesianOptimisation(object):
         if 'noise' in kwargs.keys():
             self.noise = kwargs['noise']
         else:
-            self.noise = 0.1
+            self.noise = 0.01
 
-        self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=self.noise * 2)
-
+        self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=self.noise)
 
 
 
     def optimise(self):
+
         for i in range(self.Niter):
             logging.info('Iteration {}'.format(i))
             it1 = iteration(self)
@@ -565,9 +644,11 @@ class BayesianOptimisation(object):
         best_params_vals = self.Xt[np.where(self.Yt == max_val)[0][0]]
         logging.info('Best result {}: Params: {}'.format(max_val, best_params_vals))
         best_params = {}
-        for key, val in zip(self.MLmodel.get_params(), best_params_vals):
+        for key, val in zip(sorted(self.hps.keys()), best_params_vals):
             best_params[key] = val
         logging.info('Best result {}: Params: {}'.format(max_val, best_params))
+
+        self.best_params_vals = best_params_vals
         return self
 
     def objF(self, pars, **kwargs):
@@ -635,11 +716,109 @@ class BayesianOptimisation(object):
             plt.plot(self.Xt[:, hpi], '.', markersize=15, color='silver')
             plt.xlim()
             plt.xlabel('Iteration')
-            plt.title(hp, y=1.03)
-            ax.grid(which='major', axis='x')
+            plt.title(hp, y=1.03, fontsize = 16)
+            ax.grid(which='major', axis='y')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             ax.spines['bottom'].set_visible(False)
             ax.spines['left'].set_visible(False)
+            ylims = self.hps[hp].bounds.copy()
+            ylims[0] = ylims[0] - sum(self.hps[hp].bounds) * 0.05
+            ylims[1] = ylims[1] + sum(self.hps[hp].bounds) * 0.05
+            plt.ylim(ylims)
 
         plt.show()
+
+    def _set_rcParams(self):
+
+        rcParams['font.size'] = 16
+        rcParams['font.family'] = 'serif'
+        rcParams['legend.frameon'] = False
+        rcParams['text.color'] = 'grey'
+        rcParams['xtick.color'] = 'grey'
+        rcParams['ytick.color'] = 'grey'
+        rcParams['xtick.major.width'] = 2
+        rcParams['ytick.major.width'] = 2
+        rcParams['axes.labelcolor'] = 'grey'
+
+    def model_accuracy_convergence_plot(self):
+        """
+        Plot convergence plots for the model score
+        """
+
+        self._set_rcParams()
+
+        fig, ax = plt.subplots(figsize=(10, 7))
+        plt.plot(self.Yt, '.', markersize = 15, color='silver')
+        plt.xlim()
+        plt.xlabel('Iteration', fontsize = 16)
+        plt.title('Model Score', y=1.03, fontsize = 16)
+        ax.grid(which='major', axis='y')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+
+        plt.ylim(-0.05, 1.05)
+
+        plt.show()
+
+    def generate_random_samples(self):
+
+        # Generate continous random samples
+        if self.Ncontinous_hps > 0:
+
+            if self.sampling_method == 'maximin':
+                continous_samples = lhs(self.Ncontinous_hps, samples=self.NpI, criterion='centermaximin')
+            elif self.sampling_method == 'random':
+                continous_samples = np.random.uniform(size=(self.NpI, self.Ncontinous_hps))
+
+            conts_counter = 0
+            for i, hp in enumerate(sorted(self.hps.keys())):
+                if self.hps[hp].kind == 'continuous':
+                    continous_samples[:, conts_counter] = continous_samples[:, conts_counter] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0]) + \
+                                           self.hps[hp].bounds[0]
+                    conts_counter += 1
+
+        # Generate discrete random samples
+        Ndiscrete_hps = self.N_hps - self.Ncontinous_hps
+        if Ndiscrete_hps > 0:
+            discrete_samples = np.zeros((self.NpI, Ndiscrete_hps))
+            disc_counter = 0
+            for i, hp in enumerate(sorted(self.hps)):
+                if self.hps[hp].kind == 'discrete':
+                    discrete_samples[:, disc_counter] = np.random.choice(self.hps[hp].vals, size = self.NpI)
+                    disc_counter += 1
+
+        self.discrete_samples = discrete_samples
+        self.continuous_samples = continous_samples
+
+
+        # join together
+        return self.join_random_samples()
+
+
+
+    def join_random_samples(self, continuous_samples=None, discrete_samples=None):
+
+        all_samples = np.zeros((self.NpI, self.N_hps))
+
+        if self.discrete_samples is None:
+            return continuous_samples
+        elif self.continuous_samples is None:
+            return discrete_samples
+        else:
+            # continuous_samples = np.array([continuous_samples]).ravel()
+
+            self.values = []
+            disc_counter = 0
+            conts_counter = 0
+            for i, hp in enumerate(sorted(self.hps)):
+                if self.hps[hp].kind == 'discrete':
+                    all_samples[:, i] = self.discrete_samples[:, disc_counter]
+                    disc_counter += 1
+                elif self.hps[hp].kind == 'continuous':
+                    all_samples[:, i] += self.continuous_samples[:, conts_counter]
+                    conts_counter += 1
+
+            return all_samples
