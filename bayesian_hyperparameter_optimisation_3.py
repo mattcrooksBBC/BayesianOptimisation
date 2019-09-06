@@ -137,6 +137,8 @@ class iteration(object):
         self.gpr = pars.gpr
         self.Xt = pars.Xt
 
+        self.discrete_values = None
+
         # # Find the best optimum by starting from n_restart different random points.
         # Xs = lhs(self.N_hps, samples=pars.n_restarts, criterion='centermaximin')
         # for i, hp in enumerate(sorted(pars.hps.keys())):
@@ -148,12 +150,12 @@ class iteration(object):
         #         Xs[:, i] = Xs[:, i].astype(int)
 
         # Find the best optimum by starting from n_restart different random points.
-        if self.pars.Ncontinous_hps > 0:
+        if self.pars.Ncontinuous_hps > 0:
 
             if pars.sampling_method == 'maximin':
-                Xs = lhs(self.pars.Ncontinous_hps, samples=pars.n_restarts, criterion='centermaximin')
+                Xs = lhs(self.pars.Ncontinuous_hps, samples=pars.n_restarts, criterion='centermaximin')
             elif pars.sampling_method == 'random':
-                Xs = np.random.uniform(size=(pars.n_restarts, self.pars.Ncontinous_hps))
+                Xs = np.random.uniform(size=(pars.n_restarts, self.pars.Ncontinuous_hps))
 
             conts_counter = 0
             for i, hp in enumerate(sorted(pars.hps.keys())):
@@ -163,15 +165,14 @@ class iteration(object):
 
         # Find the best optimum by starting from n_restart different random points.
         # Xs = lhs(self.pars.Ncontinuous_hps, samples=pars.n_restarts, criterion='centermaximin')
-        # for i, hp in enumerate(sorted(self.pars.continous_hps)):
+        # for i, hp in enumerate(sorted(self.pars.continuous_hps)):
         #     Xs[:, i] = Xs[:, i] * (pars.hps[hp].bounds[1] - pars.hps[hp].bounds[0]) + \
         #                    pars.hps[hp].bounds[0]
 
         # # Find the maximum in the acquisition function
 
         # print(f"optim rout: {pars.optim_rout}")
-        # print(f"Ncontinous_hps: {pars.Ncontinous_hps}")
-
+        # print(f"Ncontinuous_hps: {pars.Ncontinuous_hps}")
 
         if pars.optim_rout == 'minimize':
             for x0 in Xs:
@@ -182,9 +183,9 @@ class iteration(object):
                     min_x = res.x
 
         elif pars.optim_rout == 'random_search':
-            if self.pars.Ncontinous_hps > 0:
+            if self.pars.Ncontinuous_hps > 0:
                 for x0 in Xs:
-                    Ndiscrete_hps = self.N_hps - self.pars.Ncontinous_hps
+                    Ndiscrete_hps = self.N_hps - self.pars.Ncontinuous_hps
                     self.discrete_values = []
                     for i, hp in enumerate(sorted(self.pars.hps)):
                         if self.pars.hps[hp].kind == 'discrete':
@@ -197,18 +198,28 @@ class iteration(object):
                         min_val = res.fun[0]
                         min_x = self.parse_obj_inputs(res.x)
             else:
-                val = self.min_obj()
-                if val < min_val:
-                    min_val = val
-                    min_x = np.array(self.discrete_values)
-        print(f"final res: t{min_x}, {min_val}")
+                # All discrete
+                for iter in range(pars.n_restarts):
+                    Ndiscrete_hps = self.N_hps - self.pars.Ncontinuous_hps
+                    self.discrete_values = []
+                    for i, hp in enumerate(sorted(self.pars.hps)):
+                        self.discrete_values.append(np.random.choice(self.pars.hps[hp].vals))
+
+                    val = self.min_obj()
+                    if val < min_val:
+                        min_val = val
+                        min_x = np.array(self.discrete_values)
+
+        print(f"final res: {min_x}, {min_val}")
 
         return min_x.reshape(-1, 1)
 
-    def parse_obj_inputs(self, continuous_values):
+    def parse_obj_inputs(self, continuous_values = None):
 
         if self.discrete_values is None:
             return continuous_values
+        elif continuous_values is None:
+            return np.array(self.discrete_values)
         else:
             continuous_values = np.array([continuous_values]).ravel()
 
@@ -253,6 +264,7 @@ class iteration(object):
         # .   - xi ~ O(0) => exploitation
         # .   - xi ~ O(1) => exploration
         # Returns: Expected improvements at points X.
+
         X = self.parse_obj_inputs(X)
         xi = self.pars.xi
 
@@ -261,7 +273,7 @@ class iteration(object):
         #         X[:, i] = np.round(X[:, i][0])
 
         # Evaluate the Gaussian Process at a test location X to get the mean and std
-        mu, sigma = self.gpr.predict(X, return_std=True)
+        mu, sigma = self.gpr.predict(X.reshape(-1, self.Xt.shape[1]), return_std=True)
         # Evaluate the Gaussian Process at the sampled points - this gets the mean values without the noise
         mu_sample = self.gpr.predict(self.Xt)
 
@@ -510,14 +522,14 @@ class BayesianOptimisation(object):
 
         # Get hyperparameter info and convert to hyperparameter class
         self.hps = {}
-        self.Ncontinous_hps = 0
+        self.Ncontinuous_hps = 0
         for hp in hps:
             self.hps[hp] = hyperparam(hps[hp])
 
             # Count number of continuous hyperparameters
             if self.hps[hp].kind == 'continuous':
-                self.Ncontinous_hps += 1
-        self.continous_hps = [hp for hp in self.hps if self.hps[hp].kind == 'continuous']
+                self.Ncontinuous_hps += 1
+        self.continuous_hps = [hp for hp in self.hps if self.hps[hp].kind == 'continuous']
 
         # Objective function to minimise
         self.MLmodel = MLmodel
@@ -534,14 +546,14 @@ class BayesianOptimisation(object):
             
         # --- Optimisation routine for the acquisition function
         self.optim_rout = optim_rout
-        self.Ndim_optim = self.Ncontinous_hps
+        self.Ndim_optim = self.Ncontinuous_hps
         # Now define a new dictionary for use in discrete MCMC optimisation
         if self.optim_rout == 'MCMC-discrete':
             self.x_dict = {}
             for i, hp in enumerate(self.hps.keys()):
                 self.x_dict[i] = list(self.hps[hp].vals)
         elif self.optim_rout == 'random_search':
-            self.Ndim_optim = self.Ncontinous_hps
+            self.Ndim_optim = self.Ncontinuous_hps
 
             
         # Get training data
@@ -555,7 +567,7 @@ class BayesianOptimisation(object):
         self.Xt = np.zeros((self.NpI, len(self.hps.keys())))
         # We also need to collect together all of the bounds for the optimization routing into one array
         self.bounds = np.zeros((len(self.hps.keys()), 2))
-        self.conts_bounds = np.zeros((self.Ncontinous_hps, 2))
+        self.conts_bounds = np.zeros((self.Ncontinuous_hps, 2))
 
         # Get some initial samples on the unit interval
         # if self.sampling_method == 'maximin':
@@ -696,36 +708,38 @@ class BayesianOptimisation(object):
         Plot convergence plots for each hyperparameter
         """
 
-        rcParams['font.size'] = 16
-        rcParams['font.family'] = 'serif'
-        rcParams['legend.frameon'] = False
-        rcParams['text.color'] = 'grey'
-        rcParams['xtick.color'] = 'grey'
-        rcParams['ytick.color'] = 'grey'
-        rcParams['xtick.major.width'] = 2
-        rcParams['ytick.major.width'] = 2
-        rcParams['axes.labelcolor'] = 'grey'
+        self._set_rcParams()
 
         Ncols = 2
-        Nrows = np.floor(self.N_hps / Ncols) + 1
+        Nrows = int(np.floor(self.N_hps / Ncols) + 1)
 
-        fig, ax = plt.subplots(figsize=(16, 5 * Nrows))
+        fig, axes = plt.subplots(Nrows, Ncols, figsize=(16, 5 * Nrows))
         plt.subplots_adjust(wspace=0.2, hspace=0.4)
         for hpi, hp in enumerate(sorted(self.hps)):
+            axis_i = int(hpi % Ncols)
+            axis_j = int(hpi / Nrows)
+
             plt.subplot(Nrows, Ncols, hpi + 1)
             plt.plot(self.Xt[:, hpi], '.', markersize=15, color='silver')
             plt.xlim()
             plt.xlabel('Iteration')
-            plt.title(hp, y=1.03, fontsize = 16)
-            ax.grid(which='major', axis='y')
+            plt.title(hp, y=1.03)
+            if self.N_hps > 1:
+                ax = axes[axis_j][axis_i]
+            else:
+                ax = axes[0]
+            ax.grid(which='major')
+
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             ax.spines['bottom'].set_visible(False)
             ax.spines['left'].set_visible(False)
+
             ylims = self.hps[hp].bounds.copy()
             ylims[0] = ylims[0] - sum(self.hps[hp].bounds) * 0.05
             ylims[1] = ylims[1] + sum(self.hps[hp].bounds) * 0.05
             plt.ylim(ylims)
+
 
         plt.show()
 
@@ -740,6 +754,8 @@ class BayesianOptimisation(object):
         rcParams['xtick.major.width'] = 2
         rcParams['ytick.major.width'] = 2
         rcParams['axes.labelcolor'] = 'grey'
+
+        plt.style.use(rcParams)
 
     def model_accuracy_convergence_plot(self):
         """
@@ -765,23 +781,27 @@ class BayesianOptimisation(object):
 
     def generate_random_samples(self):
 
-        # Generate continous random samples
-        if self.Ncontinous_hps > 0:
+        discrete_samples = None
+        continuous_samples = None
+
+
+        # Generate continuous random samples
+        if self.Ncontinuous_hps > 0:
 
             if self.sampling_method == 'maximin':
-                continous_samples = lhs(self.Ncontinous_hps, samples=self.NpI, criterion='centermaximin')
+                continuous_samples = lhs(self.Ncontinuous_hps, samples=self.NpI, criterion='centermaximin')
             elif self.sampling_method == 'random':
-                continous_samples = np.random.uniform(size=(self.NpI, self.Ncontinous_hps))
+                continuous_samples = np.random.uniform(size=(self.NpI, self.Ncontinuous_hps))
 
             conts_counter = 0
             for i, hp in enumerate(sorted(self.hps.keys())):
                 if self.hps[hp].kind == 'continuous':
-                    continous_samples[:, conts_counter] = continous_samples[:, conts_counter] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0]) + \
+                    continuous_samples[:, conts_counter] = continuous_samples[:, conts_counter] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0]) + \
                                            self.hps[hp].bounds[0]
                     conts_counter += 1
 
         # Generate discrete random samples
-        Ndiscrete_hps = self.N_hps - self.Ncontinous_hps
+        Ndiscrete_hps = self.N_hps - self.Ncontinuous_hps
         if Ndiscrete_hps > 0:
             discrete_samples = np.zeros((self.NpI, Ndiscrete_hps))
             disc_counter = 0
@@ -791,7 +811,7 @@ class BayesianOptimisation(object):
                     disc_counter += 1
 
         self.discrete_samples = discrete_samples
-        self.continuous_samples = continous_samples
+        self.continuous_samples = continuous_samples
 
 
         # join together
@@ -804,9 +824,9 @@ class BayesianOptimisation(object):
         all_samples = np.zeros((self.NpI, self.N_hps))
 
         if self.discrete_samples is None:
-            return continuous_samples
+            return self.continuous_samples
         elif self.continuous_samples is None:
-            return discrete_samples
+            return self.discrete_samples
         else:
             # continuous_samples = np.array([continuous_samples]).ravel()
 
