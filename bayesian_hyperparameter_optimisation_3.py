@@ -14,6 +14,8 @@ from pyDOE import *
 from sklearn.model_selection import cross_val_score
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
+import warnings
+import time
 
 
 import logging
@@ -209,8 +211,6 @@ class iteration(object):
                     if val < min_val:
                         min_val = val
                         min_x = np.array(self.discrete_values)
-
-        print(f"final res: {min_x}, {min_val}")
 
         return min_x.reshape(-1, 1)
 
@@ -531,6 +531,12 @@ class BayesianOptimisation(object):
                 self.Ncontinuous_hps += 1
         self.continuous_hps = [hp for hp in self.hps if self.hps[hp].kind == 'continuous']
 
+        if len(self.hps) > len(self.continuous_hps):
+            if optim_rout == 'minimize':
+                warnings.warn('Discrete hyperparameter detected: setting optim_rout to random_search')
+                optim_rout = 'random_search'
+
+
         # Objective function to minimise
         self.MLmodel = MLmodel
 
@@ -602,7 +608,7 @@ class BayesianOptimisation(object):
         if self.using_own_score:
             self.score = kwargs['scoring_function']
 
-
+        logging.info(f'Performing initial {self.NpI} samples')
         # Calculate objective function at the sampled points
         self.Yt = self.objF(pars=self.Xtdict, n=self.NpI)
 
@@ -611,6 +617,8 @@ class BayesianOptimisation(object):
             self.Niter = kwargs['Niter']
         else:
             self.Niter = 10 * self.N_hps
+
+        time.sleep(1)
         logging.info('Will perform {} iterations'.format(self.Niter))
 
         # --- Number of optimisations of the acquisition function
@@ -643,7 +651,8 @@ class BayesianOptimisation(object):
     def optimise(self):
 
         for i in range(self.Niter):
-            logging.info('Iteration {}'.format(i))
+            # logging.info(f'Iteration: {i}')
+            print(f'Iteration: {i}')
             it1 = iteration(self)
             self.Xt = it1.Xt
             self.Yt = it1.Yt
@@ -654,13 +663,15 @@ class BayesianOptimisation(object):
         # Print out best result
         max_val = max(self.Yt)
         best_params_vals = self.Xt[np.where(self.Yt == max_val)[0][0]]
-        logging.info('Best result {}: Params: {}'.format(max_val, best_params_vals))
+        # logging.info('Best result {}: Params: {}'.format(max_val, best_params_vals))
         best_params = {}
         for key, val in zip(sorted(self.hps.keys()), best_params_vals):
             best_params[key] = val
+
+        time.sleep(1)
         logging.info('Best result {}: Params: {}'.format(max_val, best_params))
 
-        self.best_params_vals = best_params_vals
+        self.best_params_vals = best_params
         return self
 
     def objF(self, pars, **kwargs):
@@ -675,7 +686,6 @@ class BayesianOptimisation(object):
 
         # Establish the basic ML model
         model = self.MLmodel
-
 
         for i in range(n):
 
@@ -708,28 +718,37 @@ class BayesianOptimisation(object):
         Plot convergence plots for each hyperparameter
         """
 
-        self._set_rcParams()
+        # self._set_rcParams()
 
         Ncols = 2
-        Nrows = int(np.floor(self.N_hps / Ncols) + 1)
+        if self.N_hps % 2 == 0:
+            Nrows = int(self.N_hps / Ncols)
+        else:
+            Nrows = int((self.N_hps + 1) / Ncols)
 
+        # Nrows = max([int(np.floor(self.N_hps / Ncols)) + 1, 1])
         fig, axes = plt.subplots(Nrows, Ncols, figsize=(16, 5 * Nrows))
+
         plt.subplots_adjust(wspace=0.2, hspace=0.4)
         for hpi, hp in enumerate(sorted(self.hps)):
+
             axis_i = int(hpi % Ncols)
             axis_j = int(hpi / Nrows)
 
             plt.subplot(Nrows, Ncols, hpi + 1)
-            plt.plot(self.Xt[:, hpi], '.', markersize=15, color='silver')
+            plt.plot(self.Xt[:, hpi], '.', markersize=15, color='steelblue')
             plt.xlim()
             plt.xlabel('Iteration')
             plt.title(hp, y=1.03)
             if self.N_hps > 1:
-                ax = axes[axis_j][axis_i]
+                if Nrows == 1:
+                    ax = axes[axis_i]
+                else:
+                    ax = axes[axis_j][axis_i]
             else:
                 ax = axes[0]
             ax.grid(which='major')
-
+            ax.grid(which='major', axis='y')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             ax.spines['bottom'].set_visible(False)
@@ -740,6 +759,11 @@ class BayesianOptimisation(object):
             ylims[1] = ylims[1] + sum(self.hps[hp].bounds) * 0.05
             plt.ylim(ylims)
 
+        if self.N_hps < Ncols * Nrows:
+            if Nrows == 1:
+                axes[1].remove()
+            else:
+                axes[Nrows-1][1].remove()
 
         plt.show()
 
@@ -762,14 +786,16 @@ class BayesianOptimisation(object):
         Plot convergence plots for the model score
         """
 
-        self._set_rcParams()
+        # self._set_rcParams()
 
         fig, ax = plt.subplots(figsize=(10, 7))
-        plt.plot(self.Yt, '.', markersize = 15, color='silver')
+        plt.plot(self.Yt, '.', markersize = 15, color='steelblue')
         plt.xlim()
         plt.xlabel('Iteration', fontsize = 16)
         plt.title('Model Score', y=1.03, fontsize = 16)
+
         ax.grid(which='major', axis='y')
+        ax.set_axisbelow(True)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.spines['bottom'].set_visible(False)
