@@ -512,6 +512,7 @@ class BayesianOptimisation(object):
                  using_own_score = False,
                  sampling_method = 'random',
                  xi = 0.01,
+                 y_train = None,
                  **kwargs):
 
         for key, value in kwargs.items():
@@ -564,7 +565,7 @@ class BayesianOptimisation(object):
             
         # Get training data
         self.X_train = kwargs['X_train']
-        self.y_train = kwargs['y_train']
+        self.y_train = y_train
 
         # Establish a dictionary for our hyperparameter values that we sample
         self.Xtdict = {}
@@ -701,11 +702,17 @@ class BayesianOptimisation(object):
             model.set_params(**hps_iter)
 
             # Train
-            model.fit(self.X_train, self.y_train)
+            if self.y_train is None:
+                model.fit(self.X_train)
+            else:
+                model.fit(self.X_train, self.y_train)
 
             # Score
             if self.using_own_score:
-                sc[i] = self.score(self.X_train, self.y_train)
+                if self.y_train is None:
+                    sc[i] = self.score(self.X_train)
+                else:
+                    sc[i] = self.score(self.X_train, self.y_train)
             else:
                 sc[i] = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
 
