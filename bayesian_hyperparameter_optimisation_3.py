@@ -191,24 +191,24 @@ class iteration(object):
                     min_x = res.x
 
         elif pars.optim_rout == 'random_search':
+            Ndiscrete_hps = self.N_hps - self.pars.Ncontinuous_hps
             if self.pars.Ncontinuous_hps > 0:
                 for x0 in Xs:
-                    Ndiscrete_hps = self.N_hps - self.pars.Ncontinuous_hps
-                    self.discrete_values = []
-                    for i, hp in enumerate(sorted(self.pars.hps)):
-                        if self.pars.hps[hp].kind == 'discrete':
-                            self.discrete_values.append(np.random.choice(self.pars.hps[hp].vals))
-                    # print(f"discrete: {self.discrete_values}")
-                    res = minimize(self.min_obj, x0=x0, bounds=pars.conts_bounds, method=pars.method)
-                    # print(f"res: {res.x}, {res.fun}")
-                    # Find the best optimum across all initiations
-                    if res.fun < min_val:
-                        min_val = res.fun[0]
-                        min_x = self.parse_obj_inputs(res.x)
+                    for random_search_iteration in range(self.pars.number_of_random_searches):
+                        self.discrete_values = []
+                        for i, hp in enumerate(sorted(self.pars.hps)):
+                            if self.pars.hps[hp].kind == 'discrete':
+                                self.discrete_values.append(np.random.choice(self.pars.hps[hp].vals))
+                        # print(f"discrete: {self.discrete_values}")
+                        res = minimize(self.min_obj, x0=x0, bounds=pars.conts_bounds, method=pars.method)
+                        # print(f"res: {res.x}, {res.fun}")
+                        # Find the best optimum across all initiations
+                        if res.fun < min_val:
+                            min_val = res.fun[0]
+                            min_x = self.parse_obj_inputs(res.x)
             else:
                 # All discrete
-                for iter in range(pars.n_restarts):
-                    Ndiscrete_hps = self.N_hps - self.pars.Ncontinuous_hps
+                for random_search_iteration in range(self.pars.number_of_random_searches):
                     self.discrete_values = []
                     for i, hp in enumerate(sorted(self.pars.hps)):
                         self.discrete_values.append(np.random.choice(self.pars.hps[hp].vals))
@@ -585,10 +585,10 @@ class BayesianOptimisation(object):
                         self.hp_grid = list(product(self.hp_grid, self.hps[hp].vals))
 
         # --- Initial sample data
-        if NpI is None:
-            self.NpI = 2 ** self.N_hps
-        else:
-            self.NpI = NpI
+        self.NpI = kwargs.setdefault('NpI', 2 ** self.N_hps)
+
+        # --- Initial sample data
+        self.number_of_random_searches = kwargs.setdefault('number_of_random_searches', 1)
 
             
         # --- Optimisation routine for the acquisition function
@@ -625,36 +625,20 @@ class BayesianOptimisation(object):
         self._initialize_hp_samples()
 
         # --- Number of iterations
-        if 'Niter' in kwargs.keys():
-            self.Niter = kwargs['Niter']
-        else:
-            self.Niter = 10 * self.N_hps
+        self.Niter = kwargs.setdefault('Niter', 10 * self.N_hps)
 
         time.sleep(1)
         logging.info('Will perform {} iterations'.format(self.Niter))
 
         # --- Number of optimisations of the acquisition function
-        if 'n_restarts' in kwargs.keys():
-            self.n_restarts = kwargs['n_restarts']
-        else:
-            self.n_restarts = 25 * self.N_hps
+        self.n_restarts = kwargs.setdefault('n_restarts', 25 * self.N_hps)
 
         # --- Optimisation method used
-        if 'method' in kwargs.keys():
-            self.method = kwargs['method']
-        else:
-            self.method = 'L-BFGS-B'
+        self.method = kwargs.setdefault('method', 'L-BFGS-B')
 
         # --- Define the Gaussian mixture model
-        if 'kernel' in kwargs.keys():
-            self.kernel = kwargs['kernel']
-        else:
-            self.kernel = RBF()
-
-        if 'noise' in kwargs.keys():
-            self.noise = kwargs['noise']
-        else:
-            self.noise = 0.01
+        self.kernel = kwargs.setdefault('kernel', RBF())
+        self.noise = kwargs.setdefault('noise', 0.01)
 
         self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=self.noise)
 
