@@ -16,6 +16,9 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 import warnings
 import time
+from funcy import lchunks
+import random
+from itertools import product
 
 
 import logging
@@ -56,6 +59,9 @@ class hyperparam(object):
             self.bounds = [list_in[0], list_in[-1]]
             self.kind = 'discrete'
             self.vals = list_in
+            self.are_ints = False
+            if len([hp_val for hp_val in list_in if int(hp_val) == hp_val]) == len(list_in):
+                self.are_ints = True
 
 
 class iteration(object):
@@ -206,6 +212,30 @@ class iteration(object):
                     self.discrete_values = []
                     for i, hp in enumerate(sorted(self.pars.hps)):
                         self.discrete_values.append(np.random.choice(self.pars.hps[hp].vals))
+
+                    val = self.min_obj()
+                    if val < min_val:
+                        min_val = val
+                        min_x = np.array(self.discrete_values)
+
+        elif pars.optim_rout == 'grid_search':
+
+            if self.pars.Ncontinuous_hps > 0:
+
+                for x0 in Xs:
+                    for hp_grid_item in self.pars.hp_grid:
+                        self.discrete_values = hp_grid_item
+                        res = minimize(self.min_obj, x0=x0, bounds=pars.conts_bounds, method=pars.method)
+                        # print(f"res: {res.x}, {res.fun}")
+                        # Find the best optimum across all initiations
+                        if res.fun < min_val:
+                            min_val = res.fun[0]
+                            min_x = self.parse_obj_inputs(res.x)
+
+            else:
+                # All discrete
+                for hp_grid_item in self.pars.hp_grid:
+                    self.discrete_values = hp_grid_item
 
                     val = self.min_obj()
                     if val < min_val:
@@ -513,6 +543,7 @@ class BayesianOptimisation(object):
                  sampling_method = 'random',
                  xi = 0.01,
                  y_train = None,
+                 nested_CV_folds = None,
                  **kwargs):
 
         for key, value in kwargs.items():
@@ -532,17 +563,26 @@ class BayesianOptimisation(object):
                 self.Ncontinuous_hps += 1
         self.continuous_hps = [hp for hp in self.hps if self.hps[hp].kind == 'continuous']
 
-        if len(self.hps) > len(self.continuous_hps):
-            if optim_rout == 'minimize':
-                warnings.warn('Discrete hyperparameter detected: setting optim_rout to random_search')
-                optim_rout = 'random_search'
-
-
         # Objective function to minimise
         self.MLmodel = MLmodel
 
         # Number of hyperparameters
         self.N_hps = len(self.hps.keys())
+
+        if len(self.hps) > len(self.continuous_hps):
+            if optim_rout == 'minimize':
+                warnings.warn('Discrete hyperparameter detected: setting optim_rout to random_search')
+                optim_rout = 'random_search'
+
+        if optim_rout == 'grid_search':
+            Ndiscrete_hps = self.N_hps - self.Ncontinuous_hps
+            self.hp_grid = None
+            for i, hp in enumerate(sorted(self.hps)):
+                if self.hps[hp].kind == 'discrete':
+                    if self.hp_grid is None:
+                        self.hp_grid = self.hps[hp].vals
+                    else:
+                        self.hp_grid = list(product(self.hp_grid, self.hps[hp].vals))
 
         # --- Initial sample data
         if NpI is None:
@@ -562,46 +602,19 @@ class BayesianOptimisation(object):
         elif self.optim_rout == 'random_search':
             self.Ndim_optim = self.Ncontinuous_hps
 
-            
-        # Get training data
-        self.X_train = kwargs['X_train']
-        self.y_train = y_train
-
-        # Establish a dictionary for our hyperparameter values that we sample
-        self.Xtdict = {}
-        # ...and then an array for the same thing but with each column being
-        # a different hyperparameter and ordered alphabetically
-        self.Xt = np.zeros((self.NpI, len(self.hps.keys())))
-        # We also need to collect together all of the bounds for the optimization routing into one array
-        self.bounds = np.zeros((len(self.hps.keys()), 2))
-        self.conts_bounds = np.zeros((self.Ncontinuous_hps, 2))
-
-        # Get some initial samples on the unit interval
-        # if self.sampling_method == 'maximin':
-        #     self.Xt = lhs(len(self.hps.keys()), samples=self.NpI, criterion='centermaximin')
-        # else:
-        self.Xt = self.generate_random_samples()
-
-
-        # For each hyper parameter, rescale the unit inverval on the 
-        # appropriate range for that hp and store in a dict
-        conts_counter = 0
-        for i, hp in enumerate(sorted(self.hps.keys())):
-            # self.Xtdict[hp] = self.hps[hp].bounds[0] + Xt[:, i] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0])
-            self.Xtdict[hp] = self.Xt[:, i]
-            # convert these to an int if kind = 'discrete'
-            
-            if self.hps[hp].kind == 'discrete':
-                # self.Xtdict[hp] = self.Xtdict[hp].astype(int)
-                None
-            else:
-                self.conts_bounds[conts_counter, :] = self.hps[hp].bounds
-                conts_counter += 1
-
-            self.bounds[i, :] = self.hps[hp].bounds
-
-            self.Xt[:, i] = self.Xtdict[hp]
-
+        # Get all training data
+        self.nested_CV_folds = nested_CV_folds
+        self._X_train = kwargs['X_train']
+        self._y_train = y_train
+        # Define training/validation sets
+        if self.nested_CV_folds:
+            self.X_train_folds = {i: self._X_train for i in range(nested_CV_folds)}
+            self.X_train = kwargs['X_train']
+            self.y_train = y_train
+        else:
+            self.X_train_folds = {0: self._X_train}
+            self.X_train = kwargs['X_train']
+            self.y_train = y_train
 
         # Have we passed in our own score function or are we using the method attached to
         # the MLmodel.score()
@@ -609,9 +622,7 @@ class BayesianOptimisation(object):
         if self.using_own_score:
             self.score = kwargs['scoring_function']
 
-        logging.info(f'Performing initial {self.NpI} samples')
-        # Calculate objective function at the sampled points
-        self.Yt = self.objF(pars=self.Xtdict, n=self.NpI)
+        self._initialize_hp_samples()
 
         # --- Number of iterations
         if 'Niter' in kwargs.keys():
@@ -647,18 +658,115 @@ class BayesianOptimisation(object):
 
         self.gpr = GaussianProcessRegressor(kernel=self.kernel, alpha=self.noise)
 
+    def _initialize_hp_samples(self):
 
+        """
+        Do inital sampling of hps to start the iterations
+        :return:
+        """
+
+        # Establish a dictionary for our hyperparameter values that we sample
+        self.Xtdict = {}
+        # ...and then an array for the same thing but with each column being
+        # a different hyperparameter and ordered alphabetically
+        self.Xt = np.zeros((self.NpI, len(self.hps.keys())))
+        # We also need to collect together all of the bounds for the optimization routing into one array
+        self.bounds = np.zeros((len(self.hps.keys()), 2))
+        self.conts_bounds = np.zeros((self.Ncontinuous_hps, 2))
+
+        # Get some initial samples on the unit interval
+        # if self.sampling_method == 'maximin':
+        #     self.Xt = lhs(len(self.hps.keys()), samples=self.NpI, criterion='centermaximin')
+        # else:
+        self.Xt = self.generate_random_samples()
+
+        # For each hyper parameter, rescale the unit inverval on the
+        # appropriate range for that hp and store in a dict
+        conts_counter = 0
+        for i, hp in enumerate(sorted(self.hps.keys())):
+            # self.Xtdict[hp] = self.hps[hp].bounds[0] + Xt[:, i] * (self.hps[hp].bounds[1] - self.hps[hp].bounds[0])
+            self.Xtdict[hp] = self.Xt[:, i]
+            # convert these to an int if kind = 'discrete'
+
+            if self.hps[hp].kind == 'discrete':
+                # self.Xtdict[hp] = self.Xtdict[hp].astype(int)
+                None
+            else:
+                self.conts_bounds[conts_counter, :] = self.hps[hp].bounds
+                conts_counter += 1
+
+            self.bounds[i, :] = self.hps[hp].bounds
+
+            self.Xt[:, i] = self.Xtdict[hp]
+
+        logging.info(f'Performing initial {self.NpI} samples')
+        # Calculate objective function at the sampled points
+        self.Yt = self.objF(pars=self.Xtdict, n=self.NpI)
 
     def optimise(self):
+        """ Call to optimise the HPs """
+        if self.nested_CV_folds is None:
+            self._optimise()
+        else:
+            self._get_fold_indexes()
+            self.outer_CV_scores = []
+            for outer_fold_id in range(self.nested_CV_folds):
+                self._initialize_hp_samples()
+                self._create_training_validation_sets(outer_fold_id)
+                self._optimise()
+
+                model = self.MLmodel.set_params(**self.best_params_vals)
+                model.fit(self.X_train, self.y_train)
+
+                outer_CV_score = self._outer_score_the_model(model, self.X_validation, self.y_validation)
+                print(f"""
+Inner CV performed. Score on outer validation set: {outer_CV_score}""")
+                self.outer_CV_scores.append(outer_CV_score)
+
+            print(f"""
+Outer CV finished!
+Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
+            round(100 * np.std(self.outer_CV_scores) / np.mean(self.outer_CV_scores), 2)}%""")
+
+            time.sleep(1)
+
+    def _get_fold_indexes(self):
+        """
+        Split the training data into training and validation sets for the outer nested CV
+        :return:
+        """
+        fold_size = int(round(self._X_train.shape[0] / self.nested_CV_folds, 0))
+        self.fold_ids = {}
+        fold_counter = 0
+
+        for fold_indexes in lchunks(fold_size, random.sample(range(self._X_train.shape[0]), self._X_train.shape[0])):
+            self.fold_ids[fold_counter] = fold_indexes
+            fold_counter += 1
+
+    def _create_training_validation_sets(self, outer_fold_id):
+
+        training_ids = [i for i in range(self._X_train.shape[0]) if i not in self.fold_ids[outer_fold_id]]
+
+        self.X_validation = self._X_train[self.fold_ids[outer_fold_id], :]
+        self.y_validation = self._y_train[self.fold_ids[outer_fold_id]]
+
+        self.X_train = self._X_train[training_ids, :]
+        self.y_train = self._y_train[training_ids]
+
+
+
+    def _optimise(self):
 
         for i in range(self.Niter):
             # logging.info(f'Iteration: {i}')
-            print(f'Iteration: {i}')
+            print(f"""
+                Iteration: {i}""")
             it1 = iteration(self)
             self.Xt = it1.Xt
             self.Yt = it1.Yt
-            print('current accuracy:', self.Yt[-1])
-            print('best accuracy:', max(self.Yt))
+            print(f"""
+                current accuracy: {self.Yt[-1]}
+                best accuracy: {max(self.Yt)}""")
             self.gpr.fit(self.Xt, self.Yt)
 
         # Print out best result
@@ -669,11 +777,28 @@ class BayesianOptimisation(object):
         for key, val in zip(sorted(self.hps.keys()), best_params_vals):
             best_params[key] = val
 
+        best_params = self._convert_best_hps_to_integers(best_params)
+
         time.sleep(1)
         logging.info('Best result {}: Params: {}'.format(max_val, best_params))
 
         self.best_params_vals = best_params
         return self
+
+    def _convert_best_hps_to_integers(self, best_params):
+        """
+        If the value of a hyper parameter is required to be an integer then convert the value saved in best_params to
+        an integer
+        :param best_params:
+        :return:
+        """
+
+        for hp in best_params:
+            if self.hps.get(hp).kind == 'discrete':
+                if self.hps.get(hp).are_ints:
+                    best_params[hp] = int(best_params[hp])
+
+        return best_params
 
     def objF(self, pars, **kwargs):
 
@@ -701,22 +826,35 @@ class BayesianOptimisation(object):
             # Create instance of MLmodel with the hps at this iteration
             model.set_params(**hps_iter)
 
-            # Train
-            if self.y_train is None:
-                model.fit(self.X_train)
-            else:
-                model.fit(self.X_train, self.y_train)
-
             # Score
-            if self.using_own_score:
-                if self.y_train is None:
-                    sc[i] = self.score(self.X_train)
-                else:
-                    sc[i] = self.score(self.X_train, self.y_train)
-            else:
-                sc[i] = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
+            sc[i] = self._inner_score_the_model(model)
 
-            print(hps_iter, f"score: {sc[i]}")
+            print(f"""
+                {hps_iter}
+                score: {sc[i]}""")
+
+        return sc
+
+    def _inner_score_the_model(self, model):
+
+        if self.using_own_score:
+            if y is None:
+                sc = self.score(self.X_train)
+            else:
+                sc = self.score(self.X_train, self.y_train)
+        else:
+            sc = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
+
+        return sc
+
+    def _outer_score_the_model(self, model, X, y):
+        if self.using_own_score:
+            if y is None:
+                sc = self.score(X)
+            else:
+                sc = self.score(X, y)
+        else:
+            sc = model.score(X, y)
 
         return sc
 
