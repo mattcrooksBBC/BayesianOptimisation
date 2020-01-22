@@ -224,7 +224,8 @@ class iteration(object):
 
                 for x0 in Xs:
                     for hp_grid_item in self.pars.hp_grid:
-                        self.discrete_values = hp_grid_item
+                        self.discrete_values = np.array(hp_grid_item).reshape(1, -1)[0]
+
                         res = minimize(self.min_obj, x0=x0, bounds=pars.conts_bounds, method=pars.method)
                         # print(f"res: {res.x}, {res.fun}")
                         # Find the best optimum across all initiations
@@ -235,7 +236,7 @@ class iteration(object):
             else:
                 # All discrete
                 for hp_grid_item in self.pars.hp_grid:
-                    self.discrete_values = hp_grid_item
+                    self.discrete_values = np.array(hp_grid_item).reshape(1, -1)[0]
 
                     val = self.min_obj()
                     if val < min_val:
@@ -302,6 +303,8 @@ class iteration(object):
         #     if self.pars.hps[hyper_param].kind == 'discrete':
         #         X[:, i] = np.round(X[:, i][0])
 
+        print(X.shape)
+        print(self.Xt.shape)
         # Evaluate the Gaussian Process at a test location X to get the mean and std
         mu, sigma = self.gpr.predict(X.reshape(-1, self.Xt.shape[1]), return_std=True)
         # Evaluate the Gaussian Process at the sampled points - this gets the mean values without the noise
@@ -544,6 +547,7 @@ class BayesianOptimisation(object):
                  xi = 0.01,
                  y_train = None,
                  nested_CV_folds = None,
+                 cv = 5,
                  **kwargs):
 
         for key, value in kwargs.items():
@@ -585,12 +589,15 @@ class BayesianOptimisation(object):
                         self.hp_grid = list(product(self.hp_grid, self.hps[hp].vals))
 
         # --- Initial sample data
-        self.NpI = kwargs.setdefault('NpI', 2 ** self.N_hps)
+        if NpI is None:
+            self.NpI = 2 ** self.N_hps
+        else:
+            self.NpI = NpI
 
         # --- Initial sample data
         self.number_of_random_searches = kwargs.setdefault('number_of_random_searches', 1)
 
-            
+
         # --- Optimisation routine for the acquisition function
         self.optim_rout = optim_rout
         self.Ndim_optim = self.Ncontinuous_hps
@@ -606,23 +613,23 @@ class BayesianOptimisation(object):
         self.nested_CV_folds = nested_CV_folds
         self._X_train = kwargs['X_train']
         self._y_train = y_train
-        # Define training/validation sets
-        if self.nested_CV_folds:
-            self.X_train_folds = {i: self._X_train for i in range(nested_CV_folds)}
-            self.X_train = kwargs['X_train']
-            self.y_train = y_train
-        else:
-            self.X_train_folds = {0: self._X_train}
-            self.X_train = kwargs['X_train']
-            self.y_train = y_train
+        # # Define training/validation sets
+        # if self.nested_CV_folds:
+        #     self.X_train_folds = {i: self._X_train for i in range(nested_CV_folds)}
+        #     self.X_train = kwargs['X_train']
+        #     self.y_train = y_train
+        # else:
+        #     self.X_train_folds = {0: self._X_train}
+        #     self.X_train = kwargs['X_train']
+        #     self.y_train = y_train
 
         # Have we passed in our own score function or are we using the method attached to
         # the MLmodel.score()
-        self.using_own_score = using_own_score
-        if self.using_own_score:
+        self.using_own_score = kwargs.setdefault('using_own_score', False)
+        if 'scoring_function' in kwargs:
+            self.using_own_score = True
             self.score = kwargs['scoring_function']
-
-        self._initialize_hp_samples()
+        self.cv = cv
 
         # --- Number of iterations
         self.Niter = kwargs.setdefault('Niter', 10 * self.N_hps)
@@ -690,13 +697,16 @@ class BayesianOptimisation(object):
     def optimise(self):
         """ Call to optimise the HPs """
         if self.nested_CV_folds is None:
+            self.X_train = self._X_train
+            self.y_train = self._y_train
+            self._initialize_hp_samples()
             self._optimise()
         else:
             self._get_fold_indexes()
             self.outer_CV_scores = []
             for outer_fold_id in range(self.nested_CV_folds):
-                self._initialize_hp_samples()
                 self._create_training_validation_sets(outer_fold_id)
+                self._initialize_hp_samples()
                 self._optimise()
 
                 model = self.MLmodel.set_params(**self.best_params_vals)
@@ -729,15 +739,16 @@ Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
 
     def _create_training_validation_sets(self, outer_fold_id):
 
-        training_ids = [i for i in range(self._X_train.shape[0]) if i not in self.fold_ids[outer_fold_id]]
+        training_ids = []
+        for i in range(self.nested_CV_folds):
+            if i != outer_fold_id:
+                training_ids += self.fold_ids[i]
 
         self.X_validation = self._X_train[self.fold_ids[outer_fold_id], :]
         self.y_validation = self._y_train[self.fold_ids[outer_fold_id]]
 
         self.X_train = self._X_train[training_ids, :]
         self.y_train = self._y_train[training_ids]
-
-
 
     def _optimise(self):
 
@@ -822,23 +833,18 @@ Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
     def _inner_score_the_model(self, model):
 
         if self.using_own_score:
-            if y is None:
-                sc = self.score(self.X_train)
-            else:
-                sc = self.score(self.X_train, self.y_train)
+            sc = self.score(model, self.X_train, self.y_train)
+
         else:
-            sc = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=5))
+            sc = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=self.cv))
 
         return sc
 
     def _outer_score_the_model(self, model, X, y):
         if self.using_own_score:
-            if y is None:
-                sc = self.score(X)
-            else:
-                sc = self.score(X, y)
+            sc = self.score(model, self.X_train, self.y_train)
         else:
-            sc = model.score(X, y)
+            sc = model.score(self.X_train, self.y_train)
 
         return sc
 
