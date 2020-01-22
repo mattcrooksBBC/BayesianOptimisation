@@ -234,11 +234,12 @@ class iteration(object):
                             min_x = self.parse_obj_inputs(res.x)
 
             else:
+
                 # All discrete
                 for hp_grid_item in self.pars.hp_grid:
                     self.discrete_values = np.array(hp_grid_item).reshape(1, -1)[0]
-
                     val = self.min_obj()
+
                     if val < min_val:
                         min_val = val
                         min_x = np.array(self.discrete_values)
@@ -288,8 +289,7 @@ class iteration(object):
         # --- Computes the EI at points X based on existing samples X_sample and Y_sample using a Gaussian process 
         # surrogate model. 
         # X: Points at which EI shall be computed (m x d). 
-        # X_sample: Sample locations (n x d). 
-        # Y_sample: Sample values (n x 1). 
+        # Xt: Sample locations (n x d).
         # gpr: A GaussianProcessRegressor fitted to samples. 
         # xi: Exploitation-exploration trade-off parameter. 
         # .   - xi ~ O(0) => exploitation
@@ -303,8 +303,6 @@ class iteration(object):
         #     if self.pars.hps[hyper_param].kind == 'discrete':
         #         X[:, i] = np.round(X[:, i][0])
 
-        print(X.shape)
-        print(self.Xt.shape)
         # Evaluate the Gaussian Process at a test location X to get the mean and std
         mu, sigma = self.gpr.predict(X.reshape(-1, self.Xt.shape[1]), return_std=True)
         # Evaluate the Gaussian Process at the sampled points - this gets the mean values without the noise
@@ -580,13 +578,11 @@ class BayesianOptimisation(object):
 
         if optim_rout == 'grid_search':
             Ndiscrete_hps = self.N_hps - self.Ncontinuous_hps
-            self.hp_grid = None
+            list_of_hp_vals = []
             for i, hp in enumerate(sorted(self.hps)):
                 if self.hps[hp].kind == 'discrete':
-                    if self.hp_grid is None:
-                        self.hp_grid = self.hps[hp].vals
-                    else:
-                        self.hp_grid = list(product(self.hp_grid, self.hps[hp].vals))
+                    list_of_hp_vals.append(self.hps[hp].vals)
+            self.hp_grid = list(product(*list_of_hp_vals))
 
         # --- Initial sample data
         if NpI is None:
