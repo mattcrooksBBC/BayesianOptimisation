@@ -137,7 +137,7 @@ class iteration(object):
         --- Returns ---
         Location of the acquisition function maximum.
         """
-        
+
         self.N_hps = pars.Xt.shape[1]
         min_val = 1
         min_x = None
@@ -546,6 +546,8 @@ class BayesianOptimisation(object):
                  y_train = None,
                  nested_CV_folds = None,
                  cv = 5,
+                 own_score_args = {},
+                 own_score_kwargs = {},
                  **kwargs):
 
         for key, value in kwargs.items():
@@ -625,6 +627,9 @@ class BayesianOptimisation(object):
         if 'scoring_function' in kwargs:
             self.using_own_score = True
             self.score = kwargs['scoring_function']
+            self.own_score_args = own_score_args
+            self.own_score_kwargs = own_score_kwargs
+
         self.cv = cv
 
         # --- Number of iterations
@@ -829,7 +834,7 @@ Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
     def _inner_score_the_model(self, model):
 
         if self.using_own_score:
-            sc = self.score(model, self.X_train, self.y_train)
+            sc = self.score(model, self.X_train, self.y_train, *self.own_score_args, **self.own_score_kwargs)
 
         else:
             sc = np.mean(cross_val_score(model, self.X_train, self.y_train, cv=self.cv))
@@ -838,7 +843,7 @@ Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
 
     def _outer_score_the_model(self, model, X, y):
         if self.using_own_score:
-            sc = self.score(model, self.X_train, self.y_train)
+            sc = self.score(model, self.X_train, self.y_train, *self.own_score_args, **self.own_score_kwargs)
         else:
             sc = model.score(self.X_train, self.y_train)
 
