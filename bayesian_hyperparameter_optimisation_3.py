@@ -701,14 +701,14 @@ class BayesianOptimisation(object):
             self.X_train = self._X_train
             self.y_train = self._y_train
             self._initialize_hp_samples()
-            self._optimise()
+            self._optimise(self.Niter)
         else:
             self._get_fold_indexes()
             self.outer_CV_scores = []
             for outer_fold_id in range(self.nested_CV_folds):
                 self._create_training_validation_sets(outer_fold_id)
                 self._initialize_hp_samples()
-                self._optimise()
+                self._optimise(self.Niter)
 
                 model = self.MLmodel.set_params(**self.best_params_vals)
                 model.fit(self.X_train, self.y_train)
@@ -751,9 +751,9 @@ Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
         self.X_train = self._X_train[training_ids, :]
         self.y_train = self._y_train[training_ids]
 
-    def _optimise(self):
+    def _optimise(self, number_of_iterations):
 
-        for i in range(self.Niter):
+        for i in range(number_of_iterations):
             # logging.info(f'Iteration: {i}')
             print(f"""
                 Iteration: {i}""")
@@ -780,6 +780,22 @@ Mean score across outer validation sets: {np.mean(self.outer_CV_scores)} +/- {
 
         self.best_params_vals = best_params
         return self
+
+    def continue_(self, N_more_iter = None):
+        """
+        Function to run N_more_iter iterations on top of a previously run model. Throws error if nested_CV_folds is not
+        None.
+        :param N_more_iter: number of additional iterations to perform. If null then uses self.Niter
+        :return:
+        """
+        if self.nested_CV_folds is not None:
+            raise ValueError('Cannot use continue with nested CV')
+
+        if N_more_iter is None:
+            N_more_iter = self.Niter
+
+        self._optimise(N_more_iter)
+
 
     def _convert_best_hps_to_integers(self, best_params):
         """
